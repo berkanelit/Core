@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Trading Bot</title>
+</head>
+<body>
+    <h1>Trading Bot</h1>
+    <h2>Bot Status: {% if is_trade_active %}Active{% else %}Inactive{% endif %}</h2>
+    <h2>Last Price: {{ last_price }}</h2>
+    <div>
+        <img src="{{ url_for('static', filename='candlestick_chart.png') }}" alt="Candlestick Chart">
+    </div>
+</body>
+</html>
