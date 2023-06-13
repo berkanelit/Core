@@ -7,6 +7,12 @@ from binance.client import Client
 from binance.enums import *
 import numpy as np
 import time
+import tkinter as tk
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from binance.client import Client
+import numpy as np
+from datetime import datetime
 
 # Binance API kimlik bilgileri
 api_key = 'wDlvMXEY27d35HaK5Unpcvu6faqbIZF5Mr4BHQgThyOJnjHHSTwycJNwPxDSc8ov'
@@ -22,10 +28,22 @@ symbol = 'RNDRBUSD'
 
 max_kullanilabilir_bakiye = 15
 
+quantity = round(max_kullanilabilir_bakiye, 2)
+
 # Ana uygulama penceresini başlat
 window = tk.Tk()
 window.title("Binance-Bot")
 window.geometry("800x600")
+
+# Fiyat grafiği için figür oluşturma
+fig = plt.figure(figsize=(6, 4), dpi=100)
+ax = fig.add_subplot(111)
+canvas = FigureCanvasTkAgg(fig, master=window)
+canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+# Cüzdan bilgisi için etiket oluşturma
+balance_label = tk.Label(window, text="Balance: ")
+balance_label.pack(side=tk.BOTTOM)
 
 # Fiyat tablosu için bir çerçeve oluşturun
 price_frame = tk.Frame(window)
@@ -50,10 +68,7 @@ sell_button.pack(side=tk.LEFT, padx=10, pady=10)
 
 # Satın alma veya satma emri verme işlevi
 def place_order(order_type):
-    symbol = 'RNDRBUSD'
-    quantity = 1  # İstenilen miktarı ayarlayın
-    price = None  # İstediğiniz fiyatı ayarlayın (isteğe bağlı)
-    
+    global symbol, quantity
     if order_type == 'buy':
         # Satın al
         order = client.create_order(
@@ -76,195 +91,239 @@ def place_order(order_type):
 buy_button.config(command=lambda: place_order("buy"))
 sell_button.config(command=lambda: place_order("sell"))
 
-# Fiyat tablosunu güncelleme işlevi
+# Son 100 mum çubuğunu güncelleme ve fiyat grafiğini çizme işlevi
 def update_price_chart():
-    symbol = 'RNDRBUSD'
-    kline_data = client.get_klines(symbol=symbol, interval=Client.KLINE_INTERVAL_1MINUTE, limit=100)
-    
-    timestamps = [datetime.datetime.fromtimestamp(entry[0] / 1000) for entry in kline_data]
-    close_prices = [float(entry[4]) for entry in kline_data]
-    
-    price_axes.cla()
-    price_axes.plot(timestamps, close_prices)
-    price_axes.xaxis.set_major_locator(mdates.AutoDateLocator())
-    price_axes.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M'))
-    price_axes.set_ylabel('Price')
-    price_axes.set_title('Price Chart')
-    price_canvas.draw()
+    global symbol, ax
 
-def update_charts():
-    update_price_chart()
-    window.after(5000, update_charts) 
+    # Son 100 mum çubuğunu al
+    klines = client.get_klines(
+        symbol=symbol,
+        interval=Client.KLINE_INTERVAL_15MINUTE,
+        limit=100
+    )
 
-update_charts()
+    # Mum çubuklarını çizme
+    candles = np.array(klines)
+    timestamps = candles[:, 0].astype(np.int64) / 1000
+    dates = [datetime.fromtimestamp(ts) for ts in timestamps]
+    opens = candles[:, 1].astype(np.float)
+    highs = candles[:, 2].astype(np.float)
+    lows = candles[:, 3].astype(np.float)
+    closes = candles[:, 4].astype(np.float)
 
-window.mainloop()
+    ax.clear()
+    ax.xaxis_date()
+    ax.plot(dates, closes, "-")
 
-# Zero Lag MACD parametreleri
-hizli_uzunluk = 12
-yavas_uzunluk = 26
-sinyal_uzunluk = 12
-macd_ema_uzunluk = 12
-ema_kullan = True
-eski_algoritma_kullan = False
+    # Güncellenen fiyatı al ve ekranda gösterme
+    current_price = float(closes[-1])
+    current_price_label.config(text="Current Price: {:.2f}".format(current_price))
 
-# Üssel Hareketli Ortalama (EMA)
-def ema(degerler, periyot):
-    agirliklar = np.exp(np.linspace(-1., 0., periyot))
-    agirliklar /= agirliklar.sum()
-    ema = np.convolve(degerler, agirliklar, mode='full')[:len(degerler)]
+    # Cüzdan durumunu güncelleme ve ekranda gösterme
+    balance = get_account_balance()
+    balance_label.config(text="Balance: {}".format(balance))
+
+    # Çizimi güncelleme
+    canvas.draw()
+
+# Hesap bakiyesini al ve güncellemeleri yapma işlevi
+def get_account_balance():
+    account_info = client.get_account()
+    balances = account_info["balances"]
+    for balance in balances:
+        if balance["asset"] == "BUSD":
+            return float(balance["free"])
+    return 0.00
+
+balance_label = tk.Label(window, text="Balance: 0.00")
+balance_label.pack(side=tk.BOTTOM)
+
+fig = Figure(figsize=(6, 4), dpi=100)
+ax = fig.add_subplot(111)
+canvas = FigureCanvasTkAgg(fig, master=window)
+canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+current_price_label = tk.Label(window, text="Current Price: 0.00")
+current_price_label.pack(side=tk.BOTTOM)
+
+
+
+# Son 100 mum çubuğunu güncelleme ve fiyat grafiğini çizme işlevi
+def update_price_chart():
+    global symbol, ax
+
+    # Son 100 mum çubuğunu al
+    klines = client.get_historical_klines(
+        symbol=symbol,
+        interval=Client.KLINE_INTERVAL_15MINUTE,
+        limit=100
+    )
+
+    # Mum çubuklarını çizme
+    candles = np.array(klines)
+    timestamps = candles[:, 0].astype(np.int64) / 1000
+    dates = [datetime.fromtimestamp(ts) for ts in timestamps]
+    closes = candles[:, 4].astype(float)
+
+    ax.clear()
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d %H:%M:%S'))
+    ax.plot(dates, closes, "-")
+
+    # Güncellenen fiyatı al ve ekranda gösterme
+    current_price = float(closes[-1])
+    current_price_label.config(text="Current Price: {:.2f}".format(current_price))
+
+    # Cüzdan durumunu güncelleme ve ekranda gösterme
+    balance = get_account_balance()
+    balance_label.config(text="Balance: {:.2f}".format(balance))
+
+    # Çizimi güncelleme
+    canvas.draw()
+
+# Hesap bakiyesini al ve güncellemeleri yapma işlevi
+def get_account_balance():
+    account_info = client.get_account()
+    balances = account_info["balances"]
+    for balance in balances:
+        if balance["asset"] == "USDT":
+            return balance["free"]
+    return "N/A"
+
+
+# Sıfır Gecikmeli MACD göstergesi hesaplama işlevleri
+def calculate_macd(prices, slow_period=26, fast_period=12, signal_period=9):
+    exp1 = calculate_ema(prices, fast_period)
+    exp2 = calculate_ema(prices, slow_period)
+    macd_line = exp1 - exp2
+    signal_line = calculate_ema(macd_line, signal_period)
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+def calculate_ema(prices, period=12):
+    weights = np.exp(np.linspace(-1., 0., period))
+    weights /= weights.sum()
+    ema = np.convolve(prices, weights, mode='full')[:len(prices)]
+    ema[:period] = ema[period]
     return ema
 
-# Basit Hareketli Ortalama (SMA)
-def sma(degerler, periyot):
-    sma = np.convolve(degerler, np.ones((periyot,))/periyot, mode='valid')
-    return sma
+# İşlem emirleri verme işlevleri
+def place_limit_order(order_type, price):
+    global symbol, quantity
+    if order_type == 'buy':
+        # Alış limit emri
+        order = client.create_order(
+            symbol=symbol,
+            side=SIDE_BUY,
+            type=ORDER_TYPE_LIMIT,
+            timeInForce=TIME_IN_FORCE_GTC,
+            quantity=quantity,
+            price=price
+        )
+        print("Buy limit order placed:", order)
+    elif order_type == 'sell':
+        # Satış limit emri
+        order = client.create_order(
+            symbol=symbol,
+            side=SIDE_SELL,
+            type=ORDER_TYPE_LIMIT,
+            timeInForce=TIME_IN_FORCE_GTC,
+            quantity=quantity,
+            price=price
+        )
+        print("Sell limit order placed:", order)
 
-# Zero Lag MACD indikatörünü hesapla
-def zerolag_macd_hesapla(kline_verileri):
-    kapanis_fiyatlari = np.array([float(kline[4]) for kline in kline_verileri])
-
-    ma1 = ema(kapanis_fiyatlari, hizli_uzunluk) if ema_kullan else sma(kapanis_fiyatlari, hizli_uzunluk)
-    ma2 = ema(ma1, hizli_uzunluk) if ema_kullan else sma(ma1, hizli_uzunluk)
-    zerolag_ema = (2 * ma1) - ma2
-
-    mas1 = ema(kapanis_fiyatlari, yavas_uzunluk) if ema_kullan else sma(kapanis_fiyatlari, yavas_uzunluk)
-    mas2 = ema(mas1, yavas_uzunluk) if ema_kullan else sma(mas1, yavas_uzunluk)
-    zerolag_yavas_ma = (2 * mas1) - mas2
-
-    zerolag_macd = zerolag_ema - zerolag_yavas_ma
-
-    emasig1 = ema(zerolag_macd, sinyal_uzunluk)
-    emasig2 = ema(emasig1, sinyal_uzunluk)
-    sinyal = sma(zerolag_macd, sinyal_uzunluk) if eski_algoritma_kullan else (2 * emasig1) - emasig2
-
-    hist = zerolag_macd - sinyal
-
-    return zerolag_macd, sinyal, hist
-
-# Geçmiş kline verilerini al
-def gecmis_kline_verilerini_al(zaman_araligi):
-    kline_verileri = client.get_historical_klines(symbol, zaman_araligi, "1 gün önce UTC")
-    return kline_verileri
-
-# Hesap bakiyesini al
-def bakiye_al(varlik, max_bakiye=None):
-    bakiye = client.get_asset_balance(asset=varlik)
-    serbest_bakiye = float(bakiye['free'])
-    if max_bakiye is not None and serbest_bakiye > max_bakiye:
-        serbest_bakiye = max_bakiye
-    print(f"{varlik} bakiye: {serbest_bakiye}")
-    return serbest_bakiye
-
-# Limitli alış emri yerleştir
-def limitli_alis_emri(yogunluk, fiyat):
-    emir = client.create_order(
-        symbol=symbol,
-        side=SIDE_BUY,
-        type=ORDER_TYPE_LIMIT,
-        timeInForce=TIME_IN_FORCE_GTC,
-        quantity=yogunluk,
-        price=fiyat)
-    print(f"Limitli alış emri yerleştirildi. Miktar: {yogunluk}, Fiyat: {fiyat}")
-    return emir['orderId']
-
-# Limitli satış emri yerleştir
-def limitli_satis_emri(yogunluk, fiyat):
-    emir = client.create_order(
+def place_oco_order(stop_price, limit_price):
+    global symbol, quantity
+    oco_order = client.create_oco_order(
         symbol=symbol,
         side=SIDE_SELL,
-        type=ORDER_TYPE_LIMIT,
-        timeInForce=TIME_IN_FORCE_GTC,
-        quantity=yogunluk,
-        price=fiyat)
-    print(f"Limitli satış emri yerleştirildi. Miktar: {yogunluk}, Fiyat: {fiyat}")
-    return emir['orderId']
-
-# OCO satış emri yerleştir
-def oco_satis_emri(stop_fiyati, limit_fiyati, yogunluk):
-    emir = client.order_oco_sell(
-        symbol=symbol,
         stopLimitTimeInForce=TIME_IN_FORCE_GTC,
-        stopPrice=stop_fiyati,
-        price=limit_fiyati,
-        quantity=yogunluk)
-    print(f"OCO satış emri yerleştirildi. Stop Fiyatı: {stop_fiyati}, Limit Fiyatı: {limit_fiyati}, Miktar: {yogunluk}")
-    return emir['orderId']
+        quantity=quantity,
+        stopPrice=stop_price,
+        price=limit_price
+    )
+    print("OCO order placed:", oco_order)
 
-# Tüm açık emirleri iptal et
-def emirleri_iptal_et():
-    emirler = client.get_open_orders(symbol=symbol)
-    for emir in emirler:
-        client.cancel_order(symbol=symbol, orderId=emir['orderId'])
-    print("Tüm açık emirler iptal edildi.")
+def cancel_orders():
+    global symbol
+    open_orders = client.get_open_orders(symbol=symbol)
+    for order in open_orders:
+        client.cancel_order(
+            symbol=symbol,
+            orderId=order['orderId']
+        )
 
-# Cüzdan bakiyelerini al
-def cüzdan_bakiyelerini_al():
-    bakiyeler = client.get_account()['balances']
-    return {bakiye['asset']: float(bakiye['free']) for bakiye in bakiyeler}
+# Hesap bakiyesini ve işlem geçmişini almak için işlevler
+def get_account_balance():
+    account = client.get_account()
+    for balance in account['balances']:
+        if balance['asset'] == 'BUSD':
+            return float(balance['free'])
+    return 0.0
 
-# OCO emir durumunu kontrol et
-def oco_emir_durumunu_kontrol_et(emir_id):
-    emir = client.get_order(symbol=symbol, orderId=emir_id)
-    return emir['status']
+def get_trade_history():
+    global symbol
+    trades = client.get_my_trades(symbol=symbol)
+    for trade in trades:
+        print(trade)
 
-print('Ana nesne başlatıldı...')
+# MACD göstergesini güncelleme ve işlem stratejisini uygulama işlevi
+def update_macd_strategy():
+    global symbol
+    # Son 100 kapanış fiyatını al
+    klines = client.get_klines(
+        symbol=symbol,
+        interval=Client.KLINE_INTERVAL_15MINUTE,
+        limit=100
+    )
+    close_prices = []
+    for kline in klines:
+        close_price = float(kline[4])
+        close_prices.append(close_price)
+    macd_line, signal_line, histogram = calculate_macd(close_prices)
+    current_macd = macd_line[-1]
+    current_signal = signal_line[-1]
+    previous_macd = macd_line[-2]
+    previous_signal = signal_line[-2]
+    # MACD çizgisi, sinyal çizgisini yukarıdan aşağıya keserse
+    if previous_macd > previous_signal and current_macd < current_signal:
+        # Tüm açık emirleri iptal et
+        cancel_orders()
+        # En son fiyattan satın alma limit emri ver
+        latest_price = float(klines[-1][4])
+        buy_price = latest_price + 0.02 * latest_price  # Fiyatı %2 yükselt
+        place_limit_order('buy', buy_price)
+    # MACD çizgisi, sinyal çizgisini aşağıdan yukarıya keserse
+    elif previous_macd < previous_signal and current_macd > current_signal:
+        # Tüm açık emirleri iptal et
+        cancel_orders()
+        # En son fiyattan satış limit emri ver
+        latest_price = float(klines[-1][4])
+        sell_price = latest_price - 0.02 * latest_price  # Fiyatı %2 düşür
+        place_limit_order('sell', sell_price)
 
-# Ana işlem döngüsü
-oco_emir_id = None
-islem_aktif = False
-while True:
-    try:
-        # Geçmiş kline verilerini al
-        kline_verileri = gecmis_kline_verilerini_al(Client.KLINE_INTERVAL_1MINUTE)
+# Fiyat grafiğini güncelleme işlevini düzenli aralıklarla çağırma
+def update_price_chart_interval():
+    update_price_chart()
+    window.after(60000, update_price_chart_interval)  # Her dakikada bir güncelle
 
-        # Zero Lag MACD hesapla
-        macd, sinyal, hist = zerolag_macd_hesapla(kline_verileri)
-        
-        np.shape(macd)
+# MACD stratejisini düzenli aralıklarla çağırma
+def update_macd_strategy_interval():
+    update_macd_strategy()
+    window.after(60000, update_macd_strategy_interval)  # Her dakikada bir güncelle
 
-        if hist[-1] > 0 and macd[-1] > sinyal[-1] and hist[-2] < 0 and macd[-2] < sinyal[-2] and islem_aktif == False:
-            # Alış emri yerleştir
-            print("Alım")
-            bakiye = bakiye_al('BUSD', max_kullanilabilir_bakiye)
-            alis_miktari = bakiye / float(kline_verileri[-1][4])
-            emir_id = limitli_alis_emri(alis_miktari, float(kline_verileri[-1][4]))
-            
-            time.sleep(3)
+# Başlangıçta grafik ve strateji güncellemelerini çağır
+update_price_chart()
+update_macd_strategy()
 
-            # OCO satış emri yerleştir
-            satis_durdur_fiyati = float(kline_verileri[-1][4]) * 0.98
-            satis_limit_fiyati = float(kline_verileri[-1][4]) * 1.02
-            oco_emir_id = oco_satis_emri(satis_durdur_fiyati, satis_limit_fiyati, alis_miktari)
-            time.sleep(3)
-            islem_aktif = True
+# Hesap bakiyesini ve işlem geçmişini yazdır
+print("Account Balance:", get_account_balance())
+print("Trade History:")
+get_trade_history()
 
-        if hist[-1] < 0 and macd[-1] < sinyal[-1] and hist[-2] > 0 and macd[-2] > sinyal[-2] and islem_aktif:
-            # Tüm açık emirleri iptal et
-            emirleri_iptal_et()
-            print("Satım")
-            
-            time.sleep(3)
+# Güncelleme işlevlerini düzenli aralıklarla çağırma
+window.after(60000, update_price_chart_interval)
+window.after(60000, update_macd_strategy_interval)
 
-            # Satış emri yerleştir
-            bakiye = bakiye_al('RNDR')
-            satis_miktari = bakiye
-            satis_limit_fiyati = float(kline_verileri[-1][4]) * 0.98
-            limitli_satis_emri(satis_miktari, satis_limit_fiyati)
-            time.sleep(3)
-            islem_aktif = False
-
-        if oco_emir_id and oco_emir_durumunu_kontrol_et(oco_emir_id) == 'FILLED':
-            # Emir ID'lerini sıfırla
-            print("OCO")
-            oco_emir_id = None
-            islem_aktif = False
-
-        # 60 saniye bekleyin
-        mevcut_fiyat = float(kline_verileri[-1][4])
-        print(f"Tarih Saat: {time.strftime('%Y-%m-%d %H:%M:%S')} Mevcut Fiyat: {mevcut_fiyat}", end="\r")
-        time.sleep(5)
-
-    except Exception as e:
-        print(f"Bir hata oluştu: {e}")
-        time.sleep(5)
+# Ana döngüyü başlat
+window.mainloop()
