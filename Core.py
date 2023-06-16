@@ -15,7 +15,7 @@ binance = ccxt.binance({
 })
 
 # Ticaret parametreleri
-symbol = 'BTC/BUSD'  # Ticaret yapmak istediğiniz parite
+symbol = 'RNDR/USDT'  # Ticaret yapmak istediğiniz parite
 timeframe = '15m'  # Zaman dilimi
 
 # Supertrend göstergesi parametreleri
@@ -59,7 +59,12 @@ def perform_trade():
     if close_price > df['upper_band'].iloc[-1] and not active_trade:
         # Alım yap
         print("Alım")
-        quantity = 50  # Alım miktarı
+        max_usdt = 30  # Maksimum USDT tutarı
+        usdt_balance = binance.fetch_balance()['total']['USDT']
+        rndr_price = binance.fetch_ticker(symbol)['ask']
+        rndr_quantity = min(max_usdt / rndr_price, usdt_balance)
+        quantity = binance.amount_to_precision(symbol, rndr_quantity)
+
         buy_order = binance.create_market_buy_order(symbol, quantity)
 
         # OCO emri oluştur
@@ -75,7 +80,7 @@ def perform_trade():
         oco_order_id = oco_order['id']
         active_trade = True
 
-        print('Alım yapıldı. OCO emri oluşturuldu.')
+        print(f"Alım yapıldı. Alınan RNDR miktarı: {quantity}")
 
     # Sat sinyali
     elif close_price < df['lower_band'].iloc[-1] and active_trade:
@@ -86,12 +91,13 @@ def perform_trade():
             print('Alım işlemi iptal edildi.')
 
         # Satış yap
-        quantity = 0.001  # Satış miktarı
+        rndr_balance = binance.fetch_balance()['total']['RNDR']
+        quantity = binance.amount_to_precision(symbol, rndr_balance)
         sell_order = binance.create_market_sell_order(symbol, quantity)
 
         active_trade = False
 
-        print('Satış yapıldı.')
+        print(f"Satış yapıldı. Satılan RNDR miktarı: {quantity}")
 
 # Stop loss ve take profit seviyelerini ayarla
 def set_stop_loss_take_profit(df):
@@ -122,12 +128,24 @@ def check_trade_status():
 
             oco_order_id = None
 
+# Açık olan tüm emirleri iptal et
+def cancel_all_orders():
+    orders = binance.fetch_open_orders(symbol)
+    for order in orders:
+        binance.cancel_order(order['id'])
+        print(f"Iptal edilen emir: {order['id']}")
+        
 # Ana döngü
 while True:
     try:
         perform_trade()
         check_trade_status()
+        ticker = binance.fetch_ticker(symbol)
+        close_price = ticker['close']
+        trade_status = "Açık" if active_trade else "Kapalı"
+        print(f"Aktif Ticaret Durumu: {trade_status} - {symbol} Fiyatı: {close_price}", end="\r")
         time.sleep(5)
     except Exception as e:
         print('Hata oluştu:', str(e))
+        cancel_all_orders()
         time.sleep(10)
