@@ -2,6 +2,7 @@ import ccxt
 import time
 import pandas as pd
 import numpy as np
+import json
 
 # Binance API anahtarları
 api_key = 'wDlvMXEY27d35HaK5Unpcvu6faqbIZF5Mr4BHQgThyOJnjHHSTwycJNwPxDSc8ov'
@@ -25,6 +26,19 @@ supertrend_multiplier = 3.0
 # Alım satım durumu ve OCO emri
 active_trade = False
 oco_order_id = None
+
+# Veritabanı dosyası
+database_file = 'trading_data.json'
+
+# Veritabanı dosyasını yükle veya boş bir veritabanı oluştur
+try:
+    with open(database_file, 'r') as file:
+        database = json.load(file)
+except FileNotFoundError:
+    database = {
+        'active_trade': False,
+        'oco_order_id': None
+    }
 
 # Supertrend göstergesini hesapla
 def calculate_supertrend(df):
@@ -111,6 +125,22 @@ def set_stop_loss_take_profit(df):
 
     return stop_loss, take_profit
 
+# Veritabanını güncelle
+def update_database():
+    global active_trade, oco_order_id
+    database['active_trade'] = active_trade
+    database['oco_order_id'] = oco_order_id
+
+    with open(database_file, 'w') as file:
+        json.dump(database, file)
+
+# Açık olan tüm emirleri iptal et
+def cancel_all_orders():
+    orders = binance.fetch_open_orders(symbol)
+    for order in orders:
+        binance.cancel_order(order['id'])
+        print(f"Iptal edilen emir: {order['id']}")
+
 # Ticaret durumunu kontrol et
 def check_trade_status():
     global active_trade, oco_order_id
@@ -128,24 +158,21 @@ def check_trade_status():
 
             oco_order_id = None
 
-# Açık olan tüm emirleri iptal et
-def cancel_all_orders():
-    orders = binance.fetch_open_orders(symbol)
-    for order in orders:
-        binance.cancel_order(order['id'])
-        print(f"Iptal edilen emir: {order['id']}")
-        
 # Ana döngü
 while True:
     try:
         perform_trade()
         check_trade_status()
+        update_database()
+
         ticker = binance.fetch_ticker(symbol)
         close_price = ticker['close']
         trade_status = "Açık" if active_trade else "Kapalı"
         print(f"Aktif Ticaret Durumu: {trade_status} - {symbol} Fiyatı: {close_price}", end="\r")
+
         time.sleep(5)
     except Exception as e:
         print('Hata oluştu:', str(e))
         cancel_all_orders()
+        update_database()
         time.sleep(10)
