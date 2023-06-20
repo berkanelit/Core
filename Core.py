@@ -1,7 +1,6 @@
 import ccxt
 import time
 import pandas as pd
-import numpy as np
 import json
 
 # Binance API anahtarları
@@ -46,11 +45,9 @@ def calculate_supertrend(df):
     atr = df['high'] - df['low']
     atr = atr.rolling(supertrend_period).mean()
 
-    df['upper_band'] = hl2 + (supertrend_multiplier * atr)
-    df['lower_band'] = hl2 - (supertrend_multiplier * atr)
+    df['upper_band'] = hl2 - (supertrend_multiplier * atr)
+    df['lower_band'] = hl2 + (supertrend_multiplier * atr)
 
-    df['supertrend'] = np.where(df['close'] > df['upper_band'], 1,
-                                np.where(df['close'] < df['lower_band'], -1, 0))
     return df
 
 # Alım satım işlemlerini gerçekleştir
@@ -70,7 +67,7 @@ def perform_trade():
     df = calculate_supertrend(df)
 
     # Al sinyali
-    if close_price > df['upper_band'].iloc[-1] and not active_trade:
+    if close_price > df['lower_band'].iloc[-1] and not active_trade:
         # Alım yap
         print("Alım")
         max_usdt = 30  # Maksimum USDT tutarı
@@ -83,12 +80,26 @@ def perform_trade():
 
         # OCO emri oluştur
         stop_loss, take_profit = set_stop_loss_take_profit(df)
-        oco_order = binance.create_oco_order(
+        
+        stop_loss_price = stop_loss  # Set your stop-loss price
+        take_profit_price = take_profit  # Set your take-profit price
+
+        oco_order = binance.create_order(
             symbol,
+            'OCO',
             'limit',
             quantity,
-            stop_loss=stop_loss,
-            take_profit=take_profit
+            None,
+            {
+                'stopLoss': {
+                    'stopPrice': stop_loss_price,
+                    'type': 'STOP_MARKET'
+                },
+                'takeProfit': {
+                    'stopPrice': take_profit_price,
+                    'type': 'TAKE_PROFIT_MARKET'
+                }
+            }
         )
 
         oco_order_id = oco_order['id']
@@ -97,7 +108,7 @@ def perform_trade():
         print(f"Alım yapıldı. Alınan RNDR miktarı: {quantity}")
 
     # Sat sinyali
-    elif close_price < df['lower_band'].iloc[-1] and active_trade:
+    elif close_price < df['upper_band'].iloc[-1] and active_trade:
         # Aktif alım işlemi varsa iptal et
         print("Satım")
         if oco_order_id is not None:
