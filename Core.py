@@ -36,8 +36,13 @@ try:
 except FileNotFoundError:
     database = {
         'active_trade': False,
-        'oco_order_id': None
+        'oco_order_id': None,
+        'profit_rate': 0.0,
+        'trades': []
     }
+
+# Başlangıç bakiyesi
+initial_balance = 10000  # USD
 
 # Supertrend göstergesini hesapla
 def calculate_supertrend(df):
@@ -67,7 +72,7 @@ def perform_trade():
     df = calculate_supertrend(df)
 
     # Al sinyali
-    if close_price > df['lower_band'].iloc[-1] and not active_trade:
+    if close_price > df['lower_band'].iloc[-1] and close_price < df['upper_band'].iloc[-2] and not active_trade:
         # Alım yap
         print("Alım")
         max_usdt = 30  # Maksimum USDT tutarı
@@ -107,8 +112,19 @@ def perform_trade():
 
         print(f"Alım yapıldı. Alınan RNDR miktarı: {quantity}")
 
+        # Yapılan ticaretin bilgilerini kaydet
+        trade_info = {
+            'trade_type': 'buy',
+            'quantity': quantity,
+            'buy_price': close_price,
+            'stop_loss': stop_loss_price,
+            'take_profit': take_profit_price,
+            'timestamp': int(time.time())
+        }
+        database['trades'].append(trade_info)
+
     # Sat sinyali
-    elif close_price < df['upper_band'].iloc[-1] and active_trade:
+    elif close_price < df['upper_band'].iloc[-1] and close_price > df['lower_band'].iloc[-2] and active_trade:
         # Aktif alım işlemi varsa iptal et
         print("Satım")
         if oco_order_id is not None:
@@ -123,6 +139,15 @@ def perform_trade():
         active_trade = False
 
         print(f"Satış yapıldı. Satılan RNDR miktarı: {quantity}")
+
+        # Yapılan ticaretin bilgilerini kaydet
+        trade_info = {
+            'trade_type': 'sell',
+            'quantity': quantity,
+            'sell_price': close_price,
+            'timestamp': int(time.time())
+        }
+        database['trades'].append(trade_info)
 
 # Stop loss ve take profit seviyelerini ayarla
 def set_stop_loss_take_profit(df):
@@ -152,6 +177,25 @@ def cancel_all_orders():
         binance.cancel_order(order['id'])
         print(f"Iptal edilen emir: {order['id']}")
 
+# Kar oranını hesapla ve JSON dosyasına kaydet
+def calculate_profit_rate():
+    trade_count = len(database['trades'])
+    if trade_count == 0:
+        return 0.0
+
+    total_profit = 0.0
+    for trade in database['trades']:
+        if trade['trade_type'] == 'sell':
+            buy_price = trade['buy_price']
+            sell_price = trade['sell_price']
+            quantity = trade['quantity']
+
+            profit = (sell_price - buy_price) * quantity
+            total_profit += profit
+
+    profit_rate = (total_profit / initial_balance) * 100
+    database['profit_rate'] = profit_rate
+
 # Ticaret durumunu kontrol et
 def check_trade_status():
     global active_trade, oco_order_id
@@ -169,12 +213,16 @@ def check_trade_status():
 
             oco_order_id = None
 
+            # Kar oranını hesapla ve JSON dosyasına kaydet
+            calculate_profit_rate()
+
 # Ana döngü
 while True:
     try:
         perform_trade()
         check_trade_status()
         update_database()
+        calculate_profit_rate()
 
         ticker = binance.fetch_ticker(symbol)
         close_price = ticker['close']
@@ -186,4 +234,5 @@ while True:
         print('Hata oluştu:', str(e))
         cancel_all_orders()
         update_database()
+        calculate_profit_rate()
         time.sleep(10)
