@@ -2,6 +2,7 @@ import os
 import time
 import pandas as pd
 import numpy as np
+import json
 from binance.client import Client
 from binance.enums import *
 
@@ -14,7 +15,11 @@ client = Client(api_key, api_secret)
 
 # Alım emri için gerekli parametreleri belirleyin
 symbol = "RNDRUSDT"
-max_amount = 20  # Maksimum harcama tutarı
+max_amount = 5  # Maksimum harcama tutarı
+
+# Dosya adları
+trade_data_file = "trade_data.json"
+active_trade_file = "active_trade.json"
 
 # Supertrend göstergesi hesaplama fonksiyonu
 def calculate_supertrend(df, period=10, multiplier=3.0, change_atr=True):
@@ -35,9 +40,9 @@ def calculate_supertrend(df, period=10, multiplier=3.0, change_atr=True):
     dn = np.where((df['close'].shift() < dn1), np.minimum(dn, dn1), dn)
     trend = np.ones(len(df))
     for i in range(1, len(df)):
-        if trend[i - 1] == -1 and df['close'][i] > dn1[i]:
+        if trend[i - 1] == -1 and df['close'][i] < dn1[i]:
             trend[i] = 1
-        elif trend[i - 1] == 1 and df['close'][i] < up1[i]:
+        elif trend[i - 1] == 1 and df['close'][i] > up1[i]:
             trend[i] = -1
         else:
             trend[i] = trend[i - 1]
@@ -49,7 +54,7 @@ def calculate_supertrend(df, period=10, multiplier=3.0, change_atr=True):
 # SuperTrend göstergesine dayalı alım sinyali kontrolü
 def check_buy_signal(df):
     last_row = df.iloc[-1]
-    return last_row['close'] > last_row['supertrend_up']
+    return last_row['close'] > last_row['supertrend_down']
 
 
 # Alım işlemi gerçekleştirme
@@ -61,8 +66,10 @@ def place_buy_order(quantity):
         quantity=quantity
     )
     print("Alım işlemi gerçekleştirildi.")
-    
-def place_sell_order(quantity, take_profit_percent, stop_loss_percent):
+
+
+# Satış işlemi gerçekleştirme
+def place_sell_order(quantity):
     order = client.create_order(
         symbol=symbol,
         side=SIDE_SELL,
@@ -93,15 +100,43 @@ def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
     print("Stop Loss Fiyatı:", stop_loss_price)
 
 
-active_trade = False
-oco_id = None
+# Alım-satım verilerini JSON dosyasına kaydetme
+def save_trade_data(trade_id, datetime, action):
+    data = {
+        "trade_id": trade_id,
+        "datetime": datetime,
+        "action": action
+    }
+    with open(trade_data_file, "a") as file:
+        file.write(json.dumps(data) + "\n")
+
+
+# Aktif ticaret durumunu JSON dosyasına kaydetme
+def save_active_trade(active_trade):
+    data = {
+        "active_trade": active_trade
+    }
+    with open(active_trade_file, "w") as file:
+        json.dump(data, file)
+
+
+# Aktif ticaret durumunu JSON dosyasından yükleme
+def load_active_trade():
+    if os.path.isfile(active_trade_file):
+        with open(active_trade_file, "r") as file:
+            data = json.load(file)
+            return data.get("active_trade", False)
+    return False
+
 
 # Botun ana döngüsü
 def run_bot():
+    active_trade = load_active_trade()
+    oco_id = None
+
     while True:
-        global active_trade, oco_id
         # Son 100 dakikalık veriyi al
-        klines = client.get_klines(symbol=symbol, interval=KLINE_INTERVAL_1MINUTE, limit=100)
+        klines = client.get_klines(symbol=symbol, interval=KLINE_INTERVAL_15MINUTE, limit=100)
         df = pd.DataFrame(klines,
                           columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume',
                                    'trades', 'taker_base', 'taker_quote', 'ignore'])
@@ -121,13 +156,20 @@ def run_bot():
             # Alım işlemi gerçekleştirme
             place_buy_order(max_amount)
             active_trade = True
-            
+            save_trade_data(trade_id="BUY", datetime=time.time(), action="BUY")
+            save_active_trade(active_trade)
+
+        # Satış sinyali kontrolü
         if not check_buy_signal(df) and active_trade:
             balance = client.get_asset_balance(asset='RNDR')
             quantity = float(balance['free'])
             place_sell_order(quantity)
+            save_trade_data(trade_id="SELL", datetime=time.time(), action="SELL")
+            active_trade = False
+            oco_id = None
+            save_active_trade(active_trade)
 
-        # Satış sinyali kontrolü
+        # Aktif ticaret varsa ve OCO ID yoksa
         if active_trade and not oco_id:
             balance = client.get_asset_balance(asset='RNDR')
             quantity = float(balance['free'])
@@ -137,9 +179,14 @@ def run_bot():
             # OCO satış emri gönderme
             place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent)
             oco_id = True
+        
+        # Son fiyat durumu ve cüzdan bakiyesini güncelleme
+        last_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
+        balance = client.get_asset_balance(asset='USDT')
+        wallet_balance = float(balance['free'])
+        print(f"Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT ---  Aktif Ticaret: {active_trade} --- Zaman: {time.asctime()}")
 
-        time.sleep(5)
-
+        time.sleep(10)
 
 # Botu çalıştır
 run_bot()
