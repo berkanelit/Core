@@ -1,238 +1,145 @@
-import ccxt
+import os
 import time
 import pandas as pd
-import json
+import numpy as np
+from binance.client import Client
+from binance.enums import *
 
-# Binance API anahtarları
+# Binance API kimlik bilgilerinizi buraya ekleyin
 api_key = 'wDlvMXEY27d35HaK5Unpcvu6faqbIZF5Mr4BHQgThyOJnjHHSTwycJNwPxDSc8ov'
 api_secret = '3bGsXy3UAmAsPXcBQ71ndWOKloFZfau5GAXcjyKelMrSvvxXpOVbaDMQyfId1qTm'
 
-# Binance bağlantısı
-binance = ccxt.binance({
-    'apiKey': api_key,
-    'secret': api_secret,
-    'enableRateLimit': True,
-})
+# Binance istemcisini oluşturun
+client = Client(api_key, api_secret)
 
-# Ticaret parametreleri
-symbol = 'RNDR/USDT'  # Ticaret yapmak istediğiniz parite
-timeframe = '15m'  # Zaman dilimi
+# Alım emri için gerekli parametreleri belirleyin
+symbol = "RNDRUSDT"
+max_amount = 20  # Maksimum harcama tutarı
 
-# Supertrend göstergesi parametreleri
-supertrend_period = 10
-supertrend_multiplier = 3.0
-
-# Alım satım durumu ve OCO emri
-active_trade = False
-oco_order_id = None
-
-# Veritabanı dosyası
-database_file = 'trading_data.json'
-
-# Veritabanı dosyasını yükle veya boş bir veritabanı oluştur
-try:
-    with open(database_file, 'r') as file:
-        database = json.load(file)
-except FileNotFoundError:
-    database = {
-        'active_trade': False,
-        'oco_order_id': None,
-        'profit_rate': 0.0,
-        'trades': []
-    }
-
-# Başlangıç bakiyesi
-initial_balance = 10000  # USD
-
-# Supertrend göstergesini hesapla
-def calculate_supertrend(df):
-    hl2 = (df['high'] + df['low']) / 2
-    atr = df['high'] - df['low']
-    atr = atr.rolling(supertrend_period).mean()
-
-    df['upper_band'] = hl2 - (supertrend_multiplier * atr)
-    df['lower_band'] = hl2 + (supertrend_multiplier * atr)
-
+# Supertrend göstergesi hesaplama fonksiyonu
+def calculate_supertrend(df, period=10, multiplier=3.0, change_atr=True):
+    df['tr'] = df['high'] - df['low']
+    src = df['close']
+    tr = pd.DataFrame()
+    tr['tr0'] = abs(df['high'] - df['low'])
+    tr['tr1'] = abs(df['high'] - df['close'].shift())
+    tr['tr2'] = abs(df['low'] - df['close'].shift())
+    tr['true_range'] = tr.max(axis=1)
+    atr2 = tr['true_range'].rolling(period).mean()
+    atr = atr2 if change_atr else tr['true_range']
+    up = src - (multiplier * atr)
+    up1 = up.shift()
+    up = np.where((df['close'].shift() > up1), np.maximum(up, up1), up)
+    dn = src + (multiplier * atr)
+    dn1 = dn.shift()
+    dn = np.where((df['close'].shift() < dn1), np.minimum(dn, dn1), dn)
+    trend = np.ones(len(df))
+    for i in range(1, len(df)):
+        if trend[i - 1] == -1 and df['close'][i] > dn1[i]:
+            trend[i] = 1
+        elif trend[i - 1] == 1 and df['close'][i] < up1[i]:
+            trend[i] = -1
+        else:
+            trend[i] = trend[i - 1]
+    df['supertrend_up'] = np.where(trend == 1, up, np.nan)
+    df['supertrend_down'] = np.where(trend == -1, dn, np.nan)
     return df
 
-# Alım satım işlemlerini gerçekleştir
-def perform_trade():
-    global active_trade, oco_order_id
 
-    # Son kapanış fiyatını al
-    ticker = binance.fetch_ticker(symbol)
-    close_price = ticker['close']
+# SuperTrend göstergesine dayalı alım sinyali kontrolü
+def check_buy_signal(df):
+    last_row = df.iloc[-1]
+    return last_row['close'] > last_row['supertrend_up']
 
-    # OHLCV verilerini al
-    ohlcv = binance.fetch_ohlcv(symbol, timeframe)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-    # Supertrend göstergesini hesapla
-    df = calculate_supertrend(df)
+# Alım işlemi gerçekleştirme
+def place_buy_order(quantity):
+    order = client.create_order(
+        symbol=symbol,
+        side=SIDE_BUY,
+        type=ORDER_TYPE_MARKET,
+        quantity=quantity
+    )
+    print("Alım işlemi gerçekleştirildi.")
+    
+def place_sell_order(quantity, take_profit_percent, stop_loss_percent):
+    order = client.create_order(
+        symbol=symbol,
+        side=SIDE_SELL,
+        type=ORDER_TYPE_MARKET,
+        quantity=quantity
+    )
+    print("Satış işlemi gerçekleştirildi.")
 
-    # Al sinyali
-    if close_price > df['lower_band'].iloc[-1] and close_price < df['upper_band'].iloc[-2] and not active_trade:
-        # Alım yap
-        print("Alım")
-        max_usdt = 30  # Maksimum USDT tutarı
-        usdt_balance = binance.fetch_balance()['total']['USDT']
-        rndr_price = binance.fetch_ticker(symbol)['ask']
-        rndr_quantity = min(max_usdt / rndr_price, usdt_balance)
-        quantity = binance.amount_to_precision(symbol, rndr_quantity)
 
-        buy_order = binance.create_market_buy_order(symbol, quantity)
+# OCO satış emri kontrolü
+def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
+    current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
+    take_profit_price = current_price * (1 + take_profit_percent / 100)
+    stop_loss_price = current_price * (1 - stop_loss_percent / 100)
 
-        # OCO emri oluştur
-        stop_loss, take_profit = set_stop_loss_take_profit(df)
-        
-        stop_loss_price = stop_loss  # Set your stop-loss price
-        take_profit_price = take_profit  # Set your take-profit price
+    take_profit_order = client.create_oco_order(
+        symbol=symbol,
+        side=SIDE_SELL,
+        quantity=quantity,
+        price=take_profit_price,
+        stopPrice=stop_loss_price,
+        stopLimitPrice=stop_loss_price,
+        stopLimitTimeInForce=TIME_IN_FORCE_GTC
+    )
 
-        oco_order = binance.create_order(
-            symbol,
-            'OCO',
-            'limit',
-            quantity,
-            None,
-            {
-                'stopLoss': {
-                    'stopPrice': stop_loss_price,
-                    'type': 'STOP_MARKET'
-                },
-                'takeProfit': {
-                    'stopPrice': take_profit_price,
-                    'type': 'TAKE_PROFIT_MARKET'
-                }
-            }
-        )
+    print("OCO satış emri gönderildi.")
+    print("Take Profit Fiyatı:", take_profit_price)
+    print("Stop Loss Fiyatı:", stop_loss_price)
 
-        oco_order_id = oco_order['id']
-        active_trade = True
 
-        print(f"Alım yapıldı. Alınan RNDR miktarı: {quantity}")
+active_trade = False
+oco_id = None
 
-        # Yapılan ticaretin bilgilerini kaydet
-        trade_info = {
-            'trade_type': 'buy',
-            'quantity': quantity,
-            'buy_price': close_price,
-            'stop_loss': stop_loss_price,
-            'take_profit': take_profit_price,
-            'timestamp': int(time.time())
-        }
-        database['trades'].append(trade_info)
+# Botun ana döngüsü
+def run_bot():
+    while True:
+        global active_trade, oco_id
+        # Son 100 dakikalık veriyi al
+        klines = client.get_klines(symbol=symbol, interval=KLINE_INTERVAL_1MINUTE, limit=100)
+        df = pd.DataFrame(klines,
+                          columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume',
+                                   'trades', 'taker_base', 'taker_quote', 'ignore'])
+        df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+        df.set_index('open_time', inplace=True)
+        df['open'] = df['open'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        df['close'] = df['close'].astype(float)
+        df['volume'] = df['volume'].astype(float)
 
-    # Sat sinyali
-    elif close_price < df['upper_band'].iloc[-1] and close_price > df['lower_band'].iloc[-2] and active_trade:
-        # Aktif alım işlemi varsa iptal et
-        print("Satım")
-        if oco_order_id is not None:
-            binance.cancel_order(oco_order_id)
-            print('Alım işlemi iptal edildi.')
+        # Supertrend göstergesini hesapla
+        df = calculate_supertrend(df, period=10, multiplier=3.0, change_atr=True)
 
-        # Satış yap
-        rndr_balance = binance.fetch_balance()['total']['RNDR']
-        quantity = binance.amount_to_precision(symbol, rndr_balance)
-        sell_order = binance.create_market_sell_order(symbol, quantity)
+        # Alım sinyali kontrolü
+        if check_buy_signal(df) and not active_trade:
+            # Alım işlemi gerçekleştirme
+            place_buy_order(max_amount)
+            active_trade = True
+            
+        if not check_buy_signal(df) and active_trade:
+            balance = client.get_asset_balance(asset='RNDR')
+            quantity = float(balance['free'])
+            place_sell_order(quantity)
 
-        active_trade = False
+        # Satış sinyali kontrolü
+        if active_trade and not oco_id:
+            balance = client.get_asset_balance(asset='RNDR')
+            quantity = float(balance['free'])
+            take_profit_percent = 5.0  # %5 kar
+            stop_loss_percent = 2.0  # %2 zarar
 
-        print(f"Satış yapıldı. Satılan RNDR miktarı: {quantity}")
-
-        # Yapılan ticaretin bilgilerini kaydet
-        trade_info = {
-            'trade_type': 'sell',
-            'quantity': quantity,
-            'sell_price': close_price,
-            'timestamp': int(time.time())
-        }
-        database['trades'].append(trade_info)
-
-# Stop loss ve take profit seviyelerini ayarla
-def set_stop_loss_take_profit(df):
-    atr = df['high'] - df['low']
-    atr = atr.rolling(supertrend_period).mean()
-    atr_current = atr.iloc[-1]
-    close_price = df['close'].iloc[-1]
-
-    stop_loss = close_price - (atr_current * 0.02)
-    take_profit = close_price + (atr_current * 0.04)
-
-    return stop_loss, take_profit
-
-# Veritabanını güncelle
-def update_database():
-    global active_trade, oco_order_id
-    database['active_trade'] = active_trade
-    database['oco_order_id'] = oco_order_id
-
-    with open(database_file, 'w') as file:
-        json.dump(database, file)
-
-# Açık olan tüm emirleri iptal et
-def cancel_all_orders():
-    orders = binance.fetch_open_orders(symbol)
-    for order in orders:
-        binance.cancel_order(order['id'])
-        print(f"Iptal edilen emir: {order['id']}")
-
-# Kar oranını hesapla ve JSON dosyasına kaydet
-def calculate_profit_rate():
-    trade_count = len(database['trades'])
-    if trade_count == 0:
-        return 0.0
-
-    total_profit = 0.0
-    for trade in database['trades']:
-        if trade['trade_type'] == 'sell':
-            buy_price = trade['buy_price']
-            sell_price = trade['sell_price']
-            quantity = trade['quantity']
-
-            profit = (sell_price - buy_price) * quantity
-            total_profit += profit
-
-    profit_rate = (total_profit / initial_balance) * 100
-    database['profit_rate'] = profit_rate
-
-# Ticaret durumunu kontrol et
-def check_trade_status():
-    global active_trade, oco_order_id
-
-    if oco_order_id is not None:
-        # OCO emrini kontrol et
-        oco_order = binance.fetch_order(oco_order_id)
-
-        if oco_order['status'] == 'closed':
-            # OCO emri gerçekleşti
-            if oco_order['side'] == 'sell':
-                print('OCO emri gerçekleşti. %4 karda satış yapıldı.')
-            elif oco_order['side'] == 'stop_loss':
-                print('OCO emri gerçekleşti. %2 zararda satış yapıldı.')
-
-            oco_order_id = None
-
-            # Kar oranını hesapla ve JSON dosyasına kaydet
-            calculate_profit_rate()
-
-# Ana döngü
-while True:
-    try:
-        perform_trade()
-        check_trade_status()
-        update_database()
-        calculate_profit_rate()
-
-        ticker = binance.fetch_ticker(symbol)
-        close_price = ticker['close']
-        trade_status = "Açık" if active_trade else "Kapalı"
-        print(f"Aktif Ticaret Durumu: {trade_status} - {symbol} Fiyatı: {close_price}", end="\r")
+            # OCO satış emri gönderme
+            place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent)
+            oco_id = True
 
         time.sleep(5)
-    except Exception as e:
-        print('Hata oluştu:', str(e))
-        cancel_all_orders()
-        update_database()
-        calculate_profit_rate()
-        time.sleep(10)
+
+
+# Botu çalıştır
+run_bot()
