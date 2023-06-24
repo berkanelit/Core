@@ -19,55 +19,27 @@ symbol = "RNDRUSDT"
 max_amount = 15  # Maksimum harcama tutarı
 
 # Supertrend göstergesi hesaplama fonksiyonu
-def calculate_supertrend(df, period=10, multiplier=3.0, change_atr=True):
+
+def calculate_supertrend(df, period=10, multiplier=3.0):
     try:
+        # Hesaplama için gerekli sütunları oluştur
         df['tr'] = df['high'] - df['low']
-        src = df['close']
-
-        tr = pd.DataFrame({
-            'tr0': abs(df['high'] - df['low']),
-            'tr1': abs(df['high'] - df['close'].shift()),
-            'tr2': abs(df['low'] - df['close'].shift())
-        })
-        tr['true_range'] = tr.max(axis=1)
-
-        atr = tr['true_range'].rolling(period).mean() if change_atr else tr['true_range']
-
-        up = src - (multiplier * atr)
-        up1 = up.shift()
-        up = np.where((df['close'].shift() > up1), np.maximum(up, up1), up)
-
-        dn = src + (multiplier * atr)
-        dn1 = dn.shift()
-        dn = np.where((df['close'].shift() < dn1), np.minimum(dn, dn1), dn)
-
-        trend = np.full(len(df), -1)
-
-        for i in range(1, len(df)):
-            if trend[i - 1] == -1 and df['close'][i] < dn1[i]:
-                trend[i] = 1
-            elif trend[i - 1] == 1 and df['close'][i] > up1[i]:
-                trend[i] = -1
-            else:
-                trend[i] = trend[i - 1]
-
-        supertrend_up = np.where(trend == 1, up, np.nan)
-        supertrend_down = np.where(trend == -1, dn, np.nan)
-
-        df['supertrend_up'] = supertrend_up
-        df['supertrend_down'] = supertrend_down
-
+        df['atr'] = df['tr'].rolling(period).mean()
+        df['lower_band'] = df['high'] + (multiplier * df['atr'])
+        df['upper_band'] = df['low'] - (multiplier * df['atr'])
+        
         return df
     except Exception as e:
         print("Hata calculate_supertrend:", str(e))
         return df
 
 
+
 # SuperTrend göstergesine dayalı alım sinyali kontrolü
 def check_buy_signal(df, active_trade):
     try:
         last_row = df.iloc[-1]
-        return last_row['close'] > last_row['supertrend_up'] and not active_trade
+        return last_row['close'] > last_row['lower_band'] and not active_trade
     except Exception as e:
         print("Hata check_buy_signal:", str(e))
         return False
@@ -223,7 +195,7 @@ def run_bot():
                 place_buy_order(max_amount)
 
             # Satış sinyalini kontrol et
-            sell_signal = df.iloc[-1]['close'] < df.iloc[-1]['supertrend_down'] and trade_data["active_trade"]
+            sell_signal = df.iloc[-1]['close'] < df.iloc[-1]['lower_band'] and trade_data["active_trade"]
 
             if sell_signal:
                 place_sell_order(max_amount)
@@ -250,7 +222,7 @@ def run_bot():
             wallet_balance = float(balance['free'])
             status = trade_data["active_trade"]
             print(
-                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT SuperUP: {df['supertrend_up'].iloc[-1]} SuperDO: {df['supertrend_down'].iloc[-1]}", end="\r")
+                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT SuperUP: {df['upper_band'].iloc[-1]} SuperDO: {df['lower_band'].iloc[-1]}", end="\r")
             time.sleep(5)
         except KeyboardInterrupt:
             print("\nBot durduruldu.")
