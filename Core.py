@@ -15,29 +15,70 @@ client = Client(api_key, api_secret)
 
 # Alım emri için gerekli parametreleri belirleyin
 symbol = "RNDRUSDT"
-max_amount = 15  # Maksimum harcama tutarı
+max_amount = 5  # Maksimum harcama tutarı
 
 # Supertrend göstergesi hesaplama fonksiyonu
-def supertrend(df, periods=10, multiplier=3, change_atr=True):
-    df['hl'] = (df['high'] + df['low']) / 2
-    df['tr'] = abs(df['high'] - df['low'])
-    df['atr'] = df['tr'].rolling(periods).mean()
-    atr = df['atr'] if change_atr else df['atr'].rolling(periods).mean()
-    df['up'] = df['hl'] - (multiplier * atr)
-    df['up1'] = df['up'].shift()
-    df['up'] = np.where(df['close'].shift() > df['up1'], np.maximum(df['up'], df['up1']), df['up'])
-    df['dn'] = df['hl'] + (multiplier * atr)
-    df['dn1'] = df['dn'].shift()
-    df['dn'] = np.where(df['close'].shift() < df['dn1'], np.minimum(df['dn'], df['dn1']), df['dn'])
-    df['trend'] = 1
-    df.loc[df['close'] <= df['dn1'], 'trend'] = -1
-    df.loc[(df['trend'] == -1) & (df['close'] > df['dn1']), 'trend'] = 1
-    print(df['dn1'])
-    return df
+def Supertrend(df, atr_period = 10, multiplier = 3):
+    
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    
+    # calculate ATR
+    price_diffs = [high - low, 
+                   high - close.shift(), 
+                   close.shift() - low]
+    true_range = pd.concat(price_diffs, axis=1)
+    true_range = true_range.abs().max(axis=1)
+    # default ATR calculation in supertrend indicator
+    atr = true_range.ewm(alpha=1/atr_period,min_periods=atr_period).mean() 
+    # df['atr'] = df['tr'].rolling(atr_period).mean()
+    
+    # HL2 is simply the average of high and low prices
+    hl2 = (high + low) / 2
+    # upperband and lowerband calculation
+    # notice that final bands are set to be equal to the respective bands
+    final_upperband = upperband = hl2 + (multiplier * atr)
+    final_lowerband = lowerband = hl2 - (multiplier * atr)
+    
+    # initialize Supertrend column to True
+    supertrend = [True] * len(df)
+    
+    for i in range(1, len(df.index)):
+        curr, prev = i, i-1
+        
+        # if current close price crosses above upperband
+        if close[curr] > final_upperband[prev]:
+            supertrend[curr] = True
+        # if current close price crosses below lowerband
+        elif close[curr] < final_lowerband[prev]:
+            supertrend[curr] = False
+        # else, the trend continues
+        else:
+            supertrend[curr] = supertrend[prev]
+            
+            # adjustment to the final bands
+            if supertrend[curr] == True and final_lowerband[curr] < final_lowerband[prev]:
+                final_lowerband[curr] = final_lowerband[prev]
+            if supertrend[curr] == False and final_upperband[curr] > final_upperband[prev]:
+                final_upperband[curr] = final_upperband[prev]
+
+        # to remove bands according to the trend direction
+        if supertrend[curr] == True:
+            final_upperband[curr] = np.nan
+        else:
+            final_lowerband[curr] = np.nan      
+    
+    return pd.DataFrame({
+        'Supertrend': supertrend,
+        'Final Lowerband': final_lowerband,
+        'Final Upperband': final_upperband,
+        'trend': np.where(supertrend, 1, -1)
+        }, index=df.index)
 
 def supertrend_signals(df):
-    buy_signal = (df['trend'] == 1) & (df['trend'].shift() == -1)
-    sell_signal = (df['trend'] == -1) & (df['trend'].shift() == 1)
+    buy_signal = df['Supertrend'].iloc[-1] == True and df['Supertrend'].iloc[-2] == False
+    sell_signal = df['Supertrend'].iloc[-1] == False and df['Supertrend'].iloc[-2] == True
     return buy_signal, sell_signal
 
 def place_buy_order(quantity):
@@ -145,6 +186,7 @@ def load_trade_data():
     return {"active_trade": False, "oco_id": None}
 
 def run_bot():
+    global trade_data
     trade_data = load_trade_data()
     while True:
         try:
@@ -152,7 +194,7 @@ def run_bot():
             klines = client.get_klines(
                 symbol=symbol,
                 interval=Client.KLINE_INTERVAL_1MINUTE,
-                limit=100
+                limit=200
             )
             
             # Kripto para verilerini DataFrame'e dönüştür
@@ -172,10 +214,8 @@ def run_bot():
             # Tarih/saat sütununu datetime veri tipine dönüştür
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-
-            
             # Supertrend göstergesini hesapla
-            df = supertrend(df)
+            df = Supertrend(df)
             
             # Alım ve satım sinyallerini belirle
             buy_signal, sell_signal = supertrend_signals(df)
@@ -184,18 +224,16 @@ def run_bot():
             if not trade_data["active_trade"] and buy_signal.any():
                 # Alım emri yerleştir
                 place_buy_order(max_amount)
+                trade_data["oco_id"] = None
+                save_trade_data()
             
             # Aktif bir alım işlemi varsa ve satım sinyali varsa
             elif trade_data["active_trade"] and sell_signal.any():
                 # Satım emri yerleştir
                 place_sell_order(max_amount)
+                trade_data["active_trade"] = False
+                save_trade_data()
                 
-            if not trade_data["oco_id"]:
-                balance = client.get_asset_balance(asset='RNDR')
-                wallet_balance = float(balance['free'])
-                if wallet_balance > 0:
-                    place_oco_sell_order(wallet_balance, take_profit_percent=5, stop_loss_percent=2)
-
             # OCO satışının şartlarını kontrol et
             open_oco_orders = get_open_oco_orders()
             if open_oco_orders:
@@ -203,24 +241,25 @@ def run_bot():
                 oco_id = oco_order["orderListId"]
                 if oco_id == trade_data["oco_id"]:
                     if oco_order["status"] == "FILLED":
-                        place_buy_order(max_amount)
+                        trade_data["active_trade"] = False
+                        trade_data["oco_id"] = None
+                        save_trade_data()
                     elif oco_order["status"] == "CANCELED":
                         trade_data["oco_id"] = None
                         save_trade_data()
-
+            
             last_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
             balance = client.get_asset_balance(asset='USDT')
             wallet_balance = float(balance['free'])
             status = trade_data["active_trade"]
             print(
-                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT", end="\r")
+                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} --- USDT ", end="\r")
             time.sleep(15)
-        except KeyboardInterrupt:
-            print("\nBot durduruldu.")
-            break
+        
         except Exception as e:
-            print("Hata run_bot:", str(e))
+            print("Hata:", str(e))
             time.sleep(5)
+
 
 # Ana işlevi çağır
 trade_data = load_trade_data()
