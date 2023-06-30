@@ -3,7 +3,6 @@ import time
 import pandas as pd
 import numpy as np
 import json
-import pathlib
 from binance.client import Client
 from binance.enums import *
 
@@ -19,33 +18,28 @@ symbol = "RNDRUSDT"
 max_amount = 15  # Maksimum harcama tutarı
 
 # Supertrend göstergesi hesaplama fonksiyonu
+def supertrend(df, periods=10, multiplier=3, change_atr=True):
+    df['hl'] = (df['high'] + df['low']) / 2
+    df['tr'] = abs(df['high'] - df['low'])
+    df['atr'] = df['tr'].rolling(periods).mean()
+    atr = df['atr'] if change_atr else df['atr'].rolling(periods).mean()
+    df['up'] = df['hl'] - (multiplier * atr)
+    df['up1'] = df['up'].shift()
+    df['up'] = np.where(df['close'].shift() > df['up1'], np.maximum(df['up'], df['up1']), df['up'])
+    df['dn'] = df['hl'] + (multiplier * atr)
+    df['dn1'] = df['dn'].shift()
+    df['dn'] = np.where(df['close'].shift() < df['dn1'], np.minimum(df['dn'], df['dn1']), df['dn'])
+    df['trend'] = 1
+    df.loc[df['close'] <= df['dn1'], 'trend'] = -1
+    df.loc[(df['trend'] == -1) & (df['close'] > df['dn1']), 'trend'] = 1
+    print(df['dn1'])
+    return df
 
-def calculate_supertrend(df, period=10, multiplier=3.0):
-    try:
-        # Hesaplama için gerekli sütunları oluştur
-        df['tr'] = df['high'] - df['low']
-        df['atr'] = df['tr'].rolling(period).mean()
-        df['lower_band'] = df['high'] + (multiplier * df['atr'])
-        df['upper_band'] = df['low'] - (multiplier * df['atr'])
-        
-        return df
-    except Exception as e:
-        print("Hata calculate_supertrend:", str(e))
-        return df
+def supertrend_signals(df):
+    buy_signal = (df['trend'] == 1) & (df['trend'].shift() == -1)
+    sell_signal = (df['trend'] == -1) & (df['trend'].shift() == 1)
+    return buy_signal, sell_signal
 
-
-
-# SuperTrend göstergesine dayalı alım sinyali kontrolü
-def check_buy_signal(df, active_trade):
-    try:
-        last_row = df.iloc[-1]
-        return last_row['close'] > last_row['lower_band'] and not active_trade
-    except Exception as e:
-        print("Hata check_buy_signal:", str(e))
-        return False
-
-
-# Alım işlemi gerçekleştirme
 def place_buy_order(quantity):
     try:
         order = client.create_order(
@@ -61,29 +55,23 @@ def place_buy_order(quantity):
     except Exception as e:
         print("Hata place_buy_order:", str(e))
 
-
 def place_sell_order(quantity):
     try:
-        # Cancel all open orders
         cancel_all_orders()
-
         time.sleep(3)
-
-        # Place the sell order
         order = client.create_order(
             symbol=symbol,
             side=SIDE_SELL,
             type=ORDER_TYPE_MARKET,
             quantity=quantity
         )
-        print("Satış işlemi gerçekleştirildi.")
+        print("Satım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = False
         trade_data["oco_id"] = None
         save_trade_data()
     except Exception as e:
         print("Hata place_sell_order:", str(e))
-
-
+        
 # OCO satış emri kontrolü
 def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
     try:
@@ -120,8 +108,7 @@ def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
         save_trade_data()
     except Exception as e:
         print("Hata place_oco_sell_order:", str(e))
-
-
+        
 def get_open_oco_orders():
     try:
         orders = client.get_open_orders(symbol=symbol)
@@ -130,7 +117,6 @@ def get_open_oco_orders():
     except Exception as e:
         print("Hata get_open_oco_orders:", str(e))
         return []
-
 
 def cancel_all_orders():
     try:
@@ -148,58 +134,62 @@ def cancel_all_orders():
     except Exception as e:
         print("Hata cancel_all_orders:", str(e))
 
-
 def save_trade_data():
-    try:
-        with open('trade_data.json', 'w') as file:
-            json.dump(trade_data, file)
-    except Exception as e:
-        print("Hata save_trade_data:", str(e))
-
+    with open("trade_data.json", "w") as file:
+        json.dump(trade_data, file)
 
 def load_trade_data():
-    try:
-        if pathlib.Path('trade_data.json').is_file():
-            with open('trade_data.json', 'r') as file:
-                return json.load(file)
-        else:
-            return {"active_trade": False, "oco_id": None}
-    except Exception as e:
-        print("Hata load_trade_data:", str(e))
-        return {"active_trade": False, "oco_id": None}
-
+    if os.path.isfile("trade_data.json"):
+        with open("trade_data.json", "r") as file:
+            return json.load(file)
+    return {"active_trade": False, "oco_id": None}
 
 def run_bot():
+    trade_data = load_trade_data()
     while True:
         try:
-            # Son 100 dakikalık veriyi al
-            klines = client.get_klines(symbol=symbol, interval=KLINE_INTERVAL_1MINUTE, limit=100)
-            df = pd.DataFrame(klines,
-                              columns=['open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time',
-                                       'quote_asset_volume',
-                                       'trades', 'taker_base', 'taker_quote', 'ignore'])
-            df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
-            df.set_index('open_time', inplace=True)
-            df['open'] = df['open'].astype(float)
-            df['high'] = df['high'].astype(float)
-            df['low'] = df['low'].astype(float)
-            df['close'] = df['close'].astype(float)
+            # Kripto para verilerini al
+            klines = client.get_klines(
+                symbol=symbol,
+                interval=Client.KLINE_INTERVAL_1MINUTE,
+                limit=100
+            )
+            
+            # Kripto para verilerini DataFrame'e dönüştür
+            df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time',
+                                               'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume',
+                                               'taker_buy_quote_asset_volume', 'ignore'])
+            
+            # Tarih/saat sütununu datetime veri tipine dönüştür
+            # Convert relevant columns to numeric data type
+            df['open'] = pd.to_numeric(df['open'])
+            df['high'] = pd.to_numeric(df['high'])
+            df['low'] = pd.to_numeric(df['low'])
+            df['close'] = pd.to_numeric(df['close'])
+            df['volume'] = pd.to_numeric(df['volume'])
+            # ... Convert other relevant columns to numeric data type
 
-            # SuperTrend göstergesini hesapla
-            df = calculate_supertrend(df)
+            # Tarih/saat sütununu datetime veri tipine dönüştür
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-            # Alım sinyalini kontrol et
-            buy_signal = check_buy_signal(df, trade_data["active_trade"])
 
-            if buy_signal:
+            
+            # Supertrend göstergesini hesapla
+            df = supertrend(df)
+            
+            # Alım ve satım sinyallerini belirle
+            buy_signal, sell_signal = supertrend_signals(df)
+            
+            # Aktif bir alım/satım işlemi yoksa ve alım sinyali varsa
+            if not trade_data["active_trade"] and buy_signal.any():
+                # Alım emri yerleştir
                 place_buy_order(max_amount)
-
-            # Satış sinyalini kontrol et
-            sell_signal = df.iloc[-1]['close'] < df.iloc[-1]['lower_band'] and trade_data["active_trade"]
-
-            if sell_signal:
+            
+            # Aktif bir alım işlemi varsa ve satım sinyali varsa
+            elif trade_data["active_trade"] and sell_signal.any():
+                # Satım emri yerleştir
                 place_sell_order(max_amount)
-
+                
             if not trade_data["oco_id"]:
                 balance = client.get_asset_balance(asset='RNDR')
                 wallet_balance = float(balance['free'])
@@ -217,20 +207,20 @@ def run_bot():
                     elif oco_order["status"] == "CANCELED":
                         trade_data["oco_id"] = None
                         save_trade_data()
+
             last_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
             balance = client.get_asset_balance(asset='USDT')
             wallet_balance = float(balance['free'])
             status = trade_data["active_trade"]
             print(
-                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT SuperUP: {df['upper_band'].iloc[-1]} SuperDO: {df['lower_band'].iloc[-1]}", end="\r")
-            time.sleep(5)
+                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT", end="\r")
+            time.sleep(15)
         except KeyboardInterrupt:
             print("\nBot durduruldu.")
             break
         except Exception as e:
             print("Hata run_bot:", str(e))
             time.sleep(5)
-
 
 # Ana işlevi çağır
 trade_data = load_trade_data()
