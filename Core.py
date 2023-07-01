@@ -246,6 +246,7 @@ def run_bot():
                         save_trade_data()
                     elif oco_order["status"] == "CANCELED":
                         trade_data["oco_id"] = None
+                        trade_data["active_trade"] = False
                         save_trade_data()
             
             last_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
