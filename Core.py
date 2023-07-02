@@ -15,14 +15,14 @@ client = Client(api_key, api_secret)
 
 # Alım emri için gerekli parametreleri belirleyin
 symbol = "RNDRUSDT"
-max_amount = 5  # Maksimum harcama tutarı
+max_amount = 140  # Maksimum harcama tutarı
 
 # Supertrend göstergesi hesaplama fonksiyonu
 def Supertrend(df, atr_period = 10, multiplier = 3):
     
     high = df['high']
     low = df['low']
-    close = df['close']
+    close = df['open']
     
     # calculate ATR
     price_diffs = [high - low, 
@@ -82,6 +82,7 @@ def supertrend_signals(df):
     return buy_signal, sell_signal
 
 def place_buy_order(quantity):
+    global trade_data
     try:
         order = client.create_order(
             symbol=symbol,
@@ -92,11 +93,13 @@ def place_buy_order(quantity):
         print("Alım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = True
         trade_data["oco_id"] = None
+        trade_data["order"] = order
         save_trade_data()
     except Exception as e:
         print("Hata place_buy_order:", str(e))
 
 def place_sell_order(quantity):
+    global trade_data
     try:
         cancel_all_orders()
         time.sleep(3)
@@ -115,6 +118,7 @@ def place_sell_order(quantity):
         
 # OCO satış emri kontrolü
 def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
+    global trade_data
     try:
         current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
         take_profit_price = round(current_price * (1 + take_profit_percent / 100), 2)
@@ -183,7 +187,7 @@ def load_trade_data():
     if os.path.isfile("trade_data.json"):
         with open("trade_data.json", "r") as file:
             return json.load(file)
-    return {"active_trade": False, "oco_id": None}
+    return {"active_trade": False, "oco_id": None, "Order": None}
 
 def run_bot():
     global trade_data
@@ -193,7 +197,7 @@ def run_bot():
             # Kripto para verilerini al
             klines = client.get_klines(
                 symbol=symbol,
-                interval=Client.KLINE_INTERVAL_1MINUTE,
+                interval=Client.KLINE_INTERVAL_15MINUTE,
                 limit=200
             )
             
@@ -233,6 +237,12 @@ def run_bot():
                 place_sell_order(max_amount)
                 trade_data["active_trade"] = False
                 save_trade_data()
+            
+            if not trade_data["oco_id"]:
+                balance = client.get_asset_balance(asset='RNDR')
+                wallet_balance = float(balance['free'])
+                if wallet_balance > 0:
+                    place_oco_sell_order(wallet_balance, take_profit_percent=4, stop_loss_percent=2)
                 
             # OCO satışının şartlarını kontrol et
             open_oco_orders = get_open_oco_orders()
@@ -254,8 +264,8 @@ def run_bot():
             wallet_balance = float(balance['free'])
             status = trade_data["active_trade"]
             print(
-                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} --- USDT ", end="\r")
-            time.sleep(15)
+                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT ", end="\r")
+            time.sleep(5)
         
         except Exception as e:
             print("Hata:", str(e))
