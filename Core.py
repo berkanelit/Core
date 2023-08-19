@@ -1,85 +1,51 @@
 import os
 import time
 import pandas as pd
-import numpy as np
+import pandas_ta as ta
 import json
 from binance.client import Client
-from binance.enums import *
+from binance.enums import SIDE_BUY, ORDER_TYPE_MARKET, SIDE_SELL, TIME_IN_FORCE_GTC
 
 # Binance API kimlik bilgilerinizi buraya ekleyin
-api_key = 'wDlvMXEY27d35HaK5Unpcvu6faqbIZF5Mr4BHQgThyOJnjHHSTwycJNwPxDSc8ov'
-api_secret = '3bGsXy3UAmAsPXcBQ71ndWOKloFZfau5GAXcjyKelMrSvvxXpOVbaDMQyfId1qTm'
+api_key = ''
+api_secret = ''
 
 # Binance istemcisini oluşturun
 client = Client(api_key, api_secret)
 
 # Alım emri için gerekli parametreleri belirleyin
 symbol = "RNDRUSDT"
-max_amount = 140  # Maksimum harcama tutarı
 
-# Supertrend göstergesi hesaplama fonksiyonu
-def Supertrend(df, atr_period = 10, multiplier = 3):
-    
-    high = df['high']
-    low = df['low']
-    close = df['open']
-    
-    # calculate ATR
-    price_diffs = [high - low, 
-                   high - close.shift(), 
-                   close.shift() - low]
-    true_range = pd.concat(price_diffs, axis=1)
-    true_range = true_range.abs().max(axis=1)
-    # default ATR calculation in supertrend indicator
-    atr = true_range.ewm(alpha=1/atr_period,min_periods=atr_period).mean() 
-    # df['atr'] = df['tr'].rolling(atr_period).mean()
-    
-    # HL2 is simply the average of high and low prices
-    hl2 = (high + low) / 2
-    # upperband and lowerband calculation
-    # notice that final bands are set to be equal to the respective bands
-    final_upperband = upperband = hl2 + (multiplier * atr)
-    final_lowerband = lowerband = hl2 - (multiplier * atr)
-    
-    # initialize Supertrend column to True
-    supertrend = [True] * len(df)
-    
-    for i in range(1, len(df.index)):
-        curr, prev = i, i-1
-        
-        # if current close price crosses above upperband
-        if close[curr] > final_upperband[prev]:
-            supertrend[curr] = True
-        # if current close price crosses below lowerband
-        elif close[curr] < final_lowerband[prev]:
-            supertrend[curr] = False
-        # else, the trend continues
-        else:
-            supertrend[curr] = supertrend[prev]
-            
-            # adjustment to the final bands
-            if supertrend[curr] == True and final_lowerband[curr] < final_lowerband[prev]:
-                final_lowerband[curr] = final_lowerband[prev]
-            if supertrend[curr] == False and final_upperband[curr] > final_upperband[prev]:
-                final_upperband[curr] = final_upperband[prev]
+# Inside the run_bot() function, replace the existing max_amount assignment with:
+max_amount = 30
 
-        # to remove bands according to the trend direction
-        if supertrend[curr] == True:
-            final_upperband[curr] = np.nan
-        else:
-            final_lowerband[curr] = np.nan      
+def zerolagmacd(close, fast_period=12, slow_period=26, signal_period=12):
     
-    return pd.DataFrame({
-        'Supertrend': supertrend,
-        'Final Lowerband': final_lowerband,
-        'Final Upperband': final_upperband,
-        'trend': np.where(supertrend, 1, -1)
-        }, index=df.index)
+    macd = (2 * ta.ema(close, fast_period) - ta.ema(ta.ema(close, fast_period), fast_period)) - (2 * ta.ema(close, slow_period) - ta.ema(ta.ema(close, slow_period), slow_period))
+    sig = (2 * ta.ema(macd, signal_period) - ta.ema(ta.ema(macd, signal_period), signal_period))
+    hist = macd- sig
+    return macd, sig, hist
 
-def supertrend_signals(df):
-    buy_signal = df['Supertrend'].iloc[-1] == True and df['Supertrend'].iloc[-2] == False
-    sell_signal = df['Supertrend'].iloc[-1] == False and df['Supertrend'].iloc[-2] == True
+def bb(close, length=20, mult=2):
+    bb_bands = ta.bbands(close, length, mult)
+    
+    upper_band = bb_bands['BBL_20_2.0']
+    middle_band = bb_bands['BBM_20_2.0']
+    lower_band = bb_bands['BBU_20_2.0']
+    
+    return upper_band, middle_band, lower_band
+
+def signals(prices, fast_period=12, slow_period=26, signal_period=12):
+    zl_macd, zl_signal, zl_macd_hist = zerolagmacd(prices['close'], fast_period, slow_period, signal_period)
+    upper_band, middle_band, lower_band = bb(prices['close'])
+    
+    buy_signal = zl_macd[198] > zl_signal[198] and zl_macd[197] < zl_signal[197] and zl_macd_hist[199] > zl_macd_hist[198] and (prices['close'][198] < middle_band[198] and prices['close'] > lower_band[198])
+    sell_signal = zl_macd[198] < zl_signal[198] and zl_macd[197] > zl_signal[197] and zl_macd_hist[199] < zl_macd_hist[198]
+    
     return buy_signal, sell_signal
+
+def round_quantity(quantity, step_size):
+    return round(quantity / step_size) * step_size
 
 def place_buy_order(quantity):
     global trade_data
@@ -88,26 +54,24 @@ def place_buy_order(quantity):
             symbol=symbol,
             side=SIDE_BUY,
             type=ORDER_TYPE_MARKET,
-            quantity=quantity
+            quantity=quantity,
         )
         print("Alım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = True
-        trade_data["oco_id"] = None
-        trade_data["order"] = order
         save_trade_data()
     except Exception as e:
         print("Hata place_buy_order:", str(e))
+
 
 def place_sell_order(quantity):
     global trade_data
     try:
         cancel_all_orders()
-        time.sleep(3)
         order = client.create_order(
             symbol=symbol,
             side=SIDE_SELL,
             type=ORDER_TYPE_MARKET,
-            quantity=quantity
+            quantity=quantity,
         )
         print("Satım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = False
@@ -115,53 +79,7 @@ def place_sell_order(quantity):
         save_trade_data()
     except Exception as e:
         print("Hata place_sell_order:", str(e))
-        
-# OCO satış emri kontrolü
-def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
-    global trade_data
-    try:
-        current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
-        take_profit_price = round(current_price * (1 + take_profit_percent / 100), 2)
-        stop_loss_price = round(current_price * (1 - stop_loss_percent / 100), 2)
 
-        # Fiyat filtresini kontrol etme
-        symbol_info = client.get_symbol_info(symbol)
-        price_filter = next((filter for filter in symbol_info['filters'] if filter['filterType'] == 'PRICE_FILTER'), None)
-        if price_filter:
-            min_price = float(price_filter['minPrice'])
-            max_price = float(price_filter['maxPrice'])
-
-            if take_profit_price < min_price or take_profit_price > max_price:
-                raise ValueError("Take Profit fiyatı fiyat filtresine uymuyor.")
-            if stop_loss_price < min_price or stop_loss_price > max_price:
-                raise ValueError("Stop Loss fiyatı fiyat filtresine uymuyor.")
-
-        take_profit_order = client.create_oco_order(
-            symbol=symbol,
-            side=SIDE_SELL,
-            quantity=quantity,
-            price=take_profit_price,
-            stopPrice=stop_loss_price,
-            stopLimitPrice=stop_loss_price,
-            stopLimitTimeInForce=TIME_IN_FORCE_GTC
-        )
-
-        print("OCO satış emri gönderildi.")
-        print("Take Profit Fiyatı:", take_profit_price)
-        print("Stop Loss Fiyatı:", stop_loss_price)
-        trade_data["oco_id"] = take_profit_order["orderListId"]
-        save_trade_data()
-    except Exception as e:
-        print("Hata place_oco_sell_order:", str(e))
-        
-def get_open_oco_orders():
-    try:
-        orders = client.get_open_orders(symbol=symbol)
-        open_oco_orders = [order for order in orders if order['type'] == 'OCO']
-        return open_oco_orders
-    except Exception as e:
-        print("Hata get_open_oco_orders:", str(e))
-        return []
 
 def cancel_all_orders():
     try:
@@ -179,6 +97,44 @@ def cancel_all_orders():
     except Exception as e:
         print("Hata cancel_all_orders:", str(e))
 
+
+# OCO satış emri kontrolü
+def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
+    global trade_data
+    try:
+        symbol_info = client.get_symbol_info(symbol)
+        lot_size_filter = next((filter for filter in symbol_info['filters'] if filter['filterType'] == 'LOT_SIZE'), None)
+        if lot_size_filter:
+            step_size = float(lot_size_filter['stepSize'])
+            quantity = round_quantity(quantity, step_size)  # Yuvarlamayı uygula
+
+        balance = client.get_asset_balance(asset='RNDR')
+        wallet_balance = float(balance['free'])
+        if wallet_balance > quantity:
+            current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
+            take_profit_price = round(current_price * (1 + take_profit_percent / 100), 3)
+            stop_loss_price = round(current_price * (1 - stop_loss_percent / 100), 3)
+
+            take_profit_order = client.create_oco_order(
+                symbol=symbol,
+                side=SIDE_SELL,
+                quantity=quantity,
+                price=take_profit_price,
+                stopPrice=stop_loss_price,
+                stopLimitPrice=stop_loss_price,
+                stopLimitTimeInForce=TIME_IN_FORCE_GTC
+            )
+
+            print("OCO satış emri gönderildi.")
+            print("Take Profit Fiyatı:", take_profit_price)
+            print("Stop Loss Fiyatı:", stop_loss_price)
+            trade_data["oco_id"] = take_profit_order["orderListId"]
+            save_trade_data()
+        else:
+            print("Yetersiz bakiye")
+    except Exception as e:
+        print("Hata place_oco_sell_order:", str(e))
+
 def save_trade_data():
     with open("trade_data.json", "w") as file:
         json.dump(trade_data, file)
@@ -187,25 +143,69 @@ def load_trade_data():
     if os.path.isfile("trade_data.json"):
         with open("trade_data.json", "r") as file:
             return json.load(file)
-    return {"active_trade": False, "oco_id": None, "Order": None}
+    return {"active_trade": False, "oco_id": None}
+
+def check_rndr_balance():
+    global trade_data
+    balance = client.get_asset_balance(asset='RNDR')
+    rndr_balance = float(balance['free'])
+    locked_rndr_balance = float(balance['locked'])
+    
+    if trade_data["active_trade"] and rndr_balance + locked_rndr_balance <= 10:
+        trade_data["active_trade"] = False
+        trade_data["oco_id"] = None
+        save_trade_data()
+        print("Aktif Ticaret Durumu Olmadığı İçin False Edildi.")
+        
+def check_status():
+    global trade_data
+    try:
+        bakiye = client.get_asset_balance(asset='RNDR')
+        cfx_bakiye = float(bakiye['free'])
+        open_orders = client.get_open_orders(symbol=symbol)
+        if open_orders:
+            trade_data["active_trade"] = True
+        if not open_orders and cfx_bakiye > 10:
+            trade_data["active_trade"] = True
+            trade_data["oco_id"] = None
+            
+    except Exception as e:
+        print("Ticaret Bulunamadı")
+        
 
 def run_bot():
     global trade_data
     trade_data = load_trade_data()
+    
     while True:
         try:
             # Kripto para verilerini al
             klines = client.get_klines(
                 symbol=symbol,
                 interval=Client.KLINE_INTERVAL_15MINUTE,
-                limit=200
+                limit=200,
             )
-            
+
             # Kripto para verilerini DataFrame'e dönüştür
-            df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time',
-                                               'quote_asset_volume', 'number_of_trades', 'taker_buy_base_asset_volume',
-                                               'taker_buy_quote_asset_volume', 'ignore'])
-            
+            df = pd.DataFrame( 
+             klines,
+             columns=[
+              "timestamp",
+              "open",
+              "high",
+              "low",
+              "close",
+              "volume",
+              "close_time",
+              "quote_asset_volume",
+              "number_of_trades",
+              "taker_buy_base_asset_volume",
+              "taker_buy_quote_asset_volume",
+              "ignore",
+             ],
+             )
+
+
             # Tarih/saat sütununu datetime veri tipine dönüştür
             # Convert relevant columns to numeric data type
             df['open'] = pd.to_numeric(df['open'])
@@ -218,55 +218,41 @@ def run_bot():
             # Tarih/saat sütununu datetime veri tipine dönüştür
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-            # Supertrend göstergesini hesapla
-            df = Supertrend(df)
-            
-            # Alım ve satım sinyallerini belirle
-            buy_signal, sell_signal = supertrend_signals(df)
+            buy_signal, sell_signal = signals(df)
             
             # Aktif bir alım/satım işlemi yoksa ve alım sinyali varsa
             if not trade_data["active_trade"] and buy_signal.any():
                 # Alım emri yerleştir
                 place_buy_order(max_amount)
-                trade_data["oco_id"] = None
                 save_trade_data()
-            
+
             # Aktif bir alım işlemi varsa ve satım sinyali varsa
             elif trade_data["active_trade"] and sell_signal.any():
                 # Satım emri yerleştir
                 place_sell_order(max_amount)
                 trade_data["active_trade"] = False
                 save_trade_data()
-            
-            if not trade_data["oco_id"]:
+                
+            check_rndr_balance()
+
+            if not trade_data["oco_id"] and trade_data["active_trade"] == True:
                 balance = client.get_asset_balance(asset='RNDR')
                 wallet_balance = float(balance['free'])
-                if wallet_balance > 0:
-                    place_oco_sell_order(wallet_balance, take_profit_percent=4, stop_loss_percent=2)
-                
-            # OCO satışının şartlarını kontrol et
-            open_oco_orders = get_open_oco_orders()
-            if open_oco_orders:
-                oco_order = open_oco_orders[0]
-                oco_id = oco_order["orderListId"]
-                if oco_id == trade_data["oco_id"]:
-                    if oco_order["status"] == "FILLED":
-                        trade_data["active_trade"] = False
-                        trade_data["oco_id"] = None
-                        save_trade_data()
-                    elif oco_order["status"] == "CANCELED":
-                        trade_data["oco_id"] = None
-                        trade_data["active_trade"] = False
-                        save_trade_data()
-            
+                if wallet_balance > 10:
+                    place_oco_sell_order(max_amount, take_profit_percent=1, stop_loss_percent=2)
+                    
+            check_status()
+
             last_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
             balance = client.get_asset_balance(asset='USDT')
             wallet_balance = float(balance['free'])
             status = trade_data["active_trade"]
             print(
-                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT ", end="\r")
-            time.sleep(5)
-        
+                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT",
+                end="\r",
+            )
+            time.sleep(3)
+
         except Exception as e:
             print("Hata:", str(e))
             time.sleep(5)
