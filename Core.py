@@ -10,8 +10,12 @@ from binance.enums import SIDE_BUY, ORDER_TYPE_MARKET, SIDE_SELL, TIME_IN_FORCE_
 api_key = ''
 api_secret = ''
 
+print("Binance Bot'a Hoşgeldiniz")
+
 # Binance istemcisini oluşturun
 client = Client(api_key, api_secret)
+
+print("Binance istemcisi oluşturuldu")
 
 # Alım emri için gerekli parametreleri belirleyin
 symbol = "RNDRUSDT"
@@ -48,6 +52,8 @@ def signals(prices, fast_period=12, slow_period=26, signal_period=12):
     sell_signal = zl_macd[198] < zl_signal[198] and zl_macd[197] > zl_signal[197] and zl_macd_hist[199] < zl_macd_hist[198]
     
     return buy_signal, sell_signal
+
+print("Alım emri için gerekli parametreler belirlendi")
 
 def round_quantity(quantity, step_size):
     return round(quantity / step_size) * step_size
@@ -188,6 +194,10 @@ def check_status():
             
     except Exception as e:
         print("Ticaret Bulunamadı")
+        
+print("Fonksiyonlar tanımlandı")
+
+print("Bot çalıştırılıyor...")
         
 
 def run_bot():
