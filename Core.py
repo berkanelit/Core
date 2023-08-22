@@ -16,8 +16,13 @@ client = Client(api_key, api_secret)
 # Alım emri için gerekli parametreleri belirleyin
 symbol = "RNDRUSDT"
 
-# Inside the run_bot() function, replace the existing max_amount assignment with:
-max_amount = 30
+def calculate_max_amount(balance):
+    max_amount = balance * 0.9  # Calculate 90% of the balance
+    step_size = 0.1  # Adjust this step size according to your requirements
+    
+    
+    rounded_max_amount = round_quantity(max_amount, step_size)
+    return rounded_max_amount
 
 def zerolagmacd(close, fast_period=12, slow_period=26, signal_period=12):
     
@@ -29,9 +34,9 @@ def zerolagmacd(close, fast_period=12, slow_period=26, signal_period=12):
 def bb(close, length=20, mult=2):
     bb_bands = ta.bbands(close, length, mult)
     
-    upper_band = bb_bands['BBL_20_2.0']
+    upper_band = bb_bands['BBU_20_2.0']
     middle_band = bb_bands['BBM_20_2.0']
-    lower_band = bb_bands['BBU_20_2.0']
+    lower_band = bb_bands['BBL_20_2.0']
     
     return upper_band, middle_band, lower_band
 
@@ -79,6 +84,18 @@ def place_sell_order(quantity):
         save_trade_data()
     except Exception as e:
         print("Hata place_sell_order:", str(e))
+        
+def place_sell_order_all_rndr():
+    global trade_data
+    try:
+        balance = client.get_asset_balance(asset='RNDR')
+        rndr_balance = float(balance['free'])
+        rndr_to_sell = int(rndr_balance)  # Calculate the integer part of RNDR balance
+
+        if rndr_to_sell > 0:
+            place_sell_order(rndr_to_sell)
+    except Exception as e:
+        print("Hata place_sell_order_all_rndr:", str(e))
 
 
 def cancel_all_orders():
@@ -223,13 +240,17 @@ def run_bot():
             # Aktif bir alım/satım işlemi yoksa ve alım sinyali varsa
             if not trade_data["active_trade"] and buy_signal.any():
                 # Alım emri yerleştir
+                balance = client.get_asset_balance(asset='USDT')
+                usdt_balance = float(balance['free'])
+                max_amount = calculate_max_amount(usdt_balance)
                 place_buy_order(max_amount)
                 save_trade_data()
 
             # Aktif bir alım işlemi varsa ve satım sinyali varsa
             elif trade_data["active_trade"] and sell_signal.any():
                 # Satım emri yerleştir
-                place_sell_order(max_amount)
+                place_sell_order_all_rndr()
+                trade_data["oco_id"] = None
                 trade_data["active_trade"] = False
                 save_trade_data()
                 
@@ -239,7 +260,7 @@ def run_bot():
                 balance = client.get_asset_balance(asset='RNDR')
                 wallet_balance = float(balance['free'])
                 if wallet_balance > 10:
-                    place_oco_sell_order(max_amount, take_profit_percent=1, stop_loss_percent=2)
+                    place_oco_sell_order(wallet_balance, take_profit_percent=1, stop_loss_percent=2)
                     
             check_status()
 
