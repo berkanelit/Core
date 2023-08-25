@@ -10,79 +10,141 @@ from binance.enums import SIDE_BUY, ORDER_TYPE_MARKET, SIDE_SELL, TIME_IN_FORCE_
 api_key = ''
 api_secret = ''
 
-print("Binance Bot'a Hoşgeldiniz")
-
 # Binance istemcisini oluşturun
 client = Client(api_key, api_secret)
 
-print("Binance istemcisi oluşturuldu")
-
-# Alım emri için gerekli parametreleri belirleyin
+# Alım emri için kullanılan sembol
 symbol = "RNDRUSDT"
 
-def calculate_max_amount(balance):
-    max_amount = balance * 0.9  # Calculate 90% of the balance
-    step_size = 0.1  # Adjust this step size according to your requirements
-    
-    
-    rounded_max_amount = round_quantity(max_amount, step_size)
-    return rounded_max_amount
+# İşlem verilerini saklamak için dictionary
+trade_data = {}
+TRADE_DATA_PATH = "trade_data.json"
 
+# Ticaret verilerini yükle
+def load_trade_data():
+    if os.path.isfile(TRADE_DATA_PATH):
+        with open(TRADE_DATA_PATH, "r") as file:
+            return json.load(file)
+    return {"active_trade": False, "oco_id": None, "buy_order_id": None, "buy_price": None}
+
+
+# Ticaret verilerini kaydet
+def save_trade_data():
+    with open("trade_data.json", "w") as file:
+        json.dump(trade_data, file)
+
+# Alım miktarını hesapla
+def calculate_max_amount(df):
+    try:
+        balance = client.get_asset_balance(asset='USDT')
+        usdt_balance = float(balance['free'])
+        balances = usdt_balance / df.iloc[-1]
+        max_rndr_amount = round(balances * 0.9)
+        return max_rndr_amount
+    except Exception as e:
+        print("Hata calculate_max_amount:", str(e))
+        return 0 
+
+# Zerolag MACD hesapla
 def zerolagmacd(close, fast_period=12, slow_period=26, signal_period=12):
-    
-    macd = (2 * ta.ema(close, fast_period) - ta.ema(ta.ema(close, fast_period), fast_period)) - (2 * ta.ema(close, slow_period) - ta.ema(ta.ema(close, slow_period), slow_period))
-    sig = (2 * ta.ema(macd, signal_period) - ta.ema(ta.ema(macd, signal_period), signal_period))
-    hist = macd- sig
-    return macd, sig, hist
+    try:
+        macd = (2 * ta.ema(close, fast_period) - ta.ema(ta.ema(close, fast_period), fast_period)) - (2 * ta.ema(close, slow_period) - ta.ema(ta.ema(close, slow_period), slow_period))
+        sig = (2 * ta.ema(macd, signal_period) - ta.ema(ta.ema(macd, signal_period), signal_period))
+        hist = macd - sig
+        return macd, sig, hist
+    except Exception as e:
+        print("Hata zerolagmacd:", str(e))
+        return None, None, None
 
+# Bollinger Bantlarını hesapla
 def bb(close, length=20, mult=2):
-    bb_bands = ta.bbands(close, length, mult)
-    
-    upper_band = bb_bands['BBU_20_2.0']
-    middle_band = bb_bands['BBM_20_2.0']
-    lower_band = bb_bands['BBL_20_2.0']
-    
-    return upper_band, middle_band, lower_band
+    try:
+        bb_bands = ta.bbands(close, length, mult)
+        upper_band = bb_bands['BBU_20_2.0']
+        middle_band = bb_bands['BBM_20_2.0']
+        lower_band = bb_bands['BBL_20_2.0']
+        return upper_band, middle_band, lower_band
+    except Exception as e:
+        print("Hata bb:", str(e))
+        return None, None, None
 
+# Alım ve satım sinyallerini hesapla
 def signals(prices, fast_period=12, slow_period=26, signal_period=12):
+    buy_signal = False
+    sell_signal = False 
+
     zl_macd, zl_signal, zl_macd_hist = zerolagmacd(prices['close'], fast_period, slow_period, signal_period)
     upper_band, middle_band, lower_band = bb(prices['close'])
     
-    buy_signal = zl_macd[198] > zl_signal[198] and zl_macd[197] < zl_signal[197] and zl_macd_hist[199] > zl_macd_hist[198] and (prices['close'][198] < middle_band[198] and prices['close'] > lower_band[198])
-    sell_signal = zl_macd[198] < zl_signal[198] and zl_macd[197] > zl_signal[197] and zl_macd_hist[199] < zl_macd_hist[198]
-    
-    return buy_signal, sell_signal
-
-print("Alım emri için gerekli parametreler belirlendi")
-
-def round_quantity(quantity, step_size):
-    return round(quantity / step_size) * step_size
-
-def place_buy_order(quantity):
-    global trade_data
     try:
+        if (
+            zl_macd[198] > zl_signal[198]
+            and zl_macd[197] < zl_signal[197]
+            and zl_macd_hist[199] > zl_macd_hist[198]
+            and prices['close'][198] > middle_band[198]
+            and prices['close'][198] < upper_band[198]
+            and prices['close'][199] > middle_band[199]
+        ):
+            buy_signal = True
+                
+        if (
+            zl_macd[198] < zl_signal[198]
+            and zl_macd[197] > zl_signal[197]
+            and zl_macd_hist[199] < zl_macd_hist[198]
+        ):
+            sell_signal = True
+            
+        return buy_signal, sell_signal
+    except Exception as e:
+        print("Hata signals:", str(e))
+        return False, False
+
+# Alım emri için miktarı yuvarla
+def round_quantity(quantity, step_size):
+    try:
+        return round(quantity / step_size) * step_size
+    except Exception as e:
+        print("Hata round_quantity:", str(e))
+        return 0
+
+# Alım emri yerleştir
+def place_buy_order(quantity):
+    try:
+        server_time = client.get_server_time()
+        request_timestamp = int(time.time() * 1000)
+        time_difference = server_time['serverTime'] - request_timestamp
+        adjusted_request_timestamp = request_timestamp + time_difference
+
         order = client.create_order(
             symbol=symbol,
             side=SIDE_BUY,
             type=ORDER_TYPE_MARKET,
             quantity=quantity,
+            timestamp=adjusted_request_timestamp,
         )
         print("Alım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = True
+        trade_data["buy_order_id"] = order["orderId"]
+        trade_data["buy_price"] = float(order["fills"][0]["price"])
         save_trade_data()
     except Exception as e:
         print("Hata place_buy_order:", str(e))
 
-
+# Satım emri yerleştir
 def place_sell_order(quantity):
-    global trade_data
     try:
+        server_time = client.get_server_time()
+        request_timestamp = int(time.time() * 1000)
+        time_difference = server_time['serverTime'] - request_timestamp
+        adjusted_request_timestamp = request_timestamp + time_difference
         cancel_all_orders()
+        
         order = client.create_order(
             symbol=symbol,
             side=SIDE_SELL,
             type=ORDER_TYPE_MARKET,
             quantity=quantity,
+            timestamp=adjusted_request_timestamp,
         )
         print("Satım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = False
@@ -90,20 +152,20 @@ def place_sell_order(quantity):
         save_trade_data()
     except Exception as e:
         print("Hata place_sell_order:", str(e))
-        
+
+# Tüm RNDR varlığını satış emri olarak yerleştir
 def place_sell_order_all_rndr():
-    global trade_data
     try:
         balance = client.get_asset_balance(asset='RNDR')
         rndr_balance = float(balance['free'])
-        rndr_to_sell = int(rndr_balance)  # Calculate the integer part of RNDR balance
+        rndr_to_sell = int(rndr_balance)
 
         if rndr_to_sell > 0:
             place_sell_order(rndr_to_sell)
     except Exception as e:
         print("Hata place_sell_order_all_rndr:", str(e))
 
-
+# Tüm açık emirleri iptal et
 def cancel_all_orders():
     try:
         open_orders = client.get_open_orders(symbol=symbol)
@@ -120,23 +182,24 @@ def cancel_all_orders():
     except Exception as e:
         print("Hata cancel_all_orders:", str(e))
 
-
-# OCO satış emri kontrolü
+# OCO satış emri yerleştirme kontrolü
 def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
-    global trade_data
     try:
+        server_time = client.get_server_time()
+        request_timestamp = int(time.time() * 1000)
+        time_difference = server_time['serverTime'] - request_timestamp
+        adjusted_request_timestamp = request_timestamp + time_difference
+        
         symbol_info = client.get_symbol_info(symbol)
         lot_size_filter = next((filter for filter in symbol_info['filters'] if filter['filterType'] == 'LOT_SIZE'), None)
+        
         if lot_size_filter:
             step_size = float(lot_size_filter['stepSize'])
-            quantity = round_quantity(quantity, step_size)  # Yuvarlamayı uygula
+            quantity = round_quantity(quantity, step_size)
+            quantity = int(quantity)
 
-        balance = client.get_asset_balance(asset='RNDR')
-        wallet_balance = float(balance['free'])
-        if wallet_balance > quantity:
-            current_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
-            take_profit_price = round(current_price * (1 + take_profit_percent / 100), 3)
-            stop_loss_price = round(current_price * (1 - stop_loss_percent / 100), 3)
+            take_profit_price = round(trade_data["buy_price"] * 1.01, 3)
+            stop_loss_price = round(trade_data["buy_price"] * 0.98, 3)
 
             take_profit_order = client.create_oco_order(
                 symbol=symbol,
@@ -145,7 +208,8 @@ def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
                 price=take_profit_price,
                 stopPrice=stop_loss_price,
                 stopLimitPrice=stop_loss_price,
-                stopLimitTimeInForce=TIME_IN_FORCE_GTC
+                stopLimitTimeInForce=TIME_IN_FORCE_GTC,
+                timestamp=adjusted_request_timestamp,
             )
 
             print("OCO satış emri gönderildi.")
@@ -158,48 +222,39 @@ def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
     except Exception as e:
         print("Hata place_oco_sell_order:", str(e))
 
-def save_trade_data():
-    with open("trade_data.json", "w") as file:
-        json.dump(trade_data, file)
-
-def load_trade_data():
-    if os.path.isfile("trade_data.json"):
-        with open("trade_data.json", "r") as file:
-            return json.load(file)
-    return {"active_trade": False, "oco_id": None}
-
+# RNDR bakiyesini kontrol et ve gerektiğinde ticareti durdur
 def check_rndr_balance():
-    global trade_data
-    balance = client.get_asset_balance(asset='RNDR')
-    rndr_balance = float(balance['free'])
-    locked_rndr_balance = float(balance['locked'])
-    
-    if trade_data["active_trade"] and rndr_balance + locked_rndr_balance <= 10:
-        trade_data["active_trade"] = False
-        trade_data["oco_id"] = None
-        save_trade_data()
-        print("Aktif Ticaret Durumu Olmadığı İçin False Edildi.")
-        
-def check_status():
-    global trade_data
     try:
-        bakiye = client.get_asset_balance(asset='RNDR')
-        cfx_bakiye = float(bakiye['free'])
+        balance = client.get_asset_balance(asset='RNDR')
+        rndr_balance = float(balance['free'])
+        locked_rndr_balance = float(balance['locked'])
+        
+        if trade_data["active_trade"] and rndr_balance + locked_rndr_balance <= 10:
+            trade_data["active_trade"] = False
+            trade_data["oco_id"] = None
+            save_trade_data()
+            print("Aktif Ticaret Durumu Olmadığı İçin False Edildi.")
+    except Exception as e:
+        print("Hata check_rndr_balance:", str(e))
+
+# Ticaret durumunu kontrol et ve gerekirse güncelle
+def check_status():
+    try:
+        balance = client.get_asset_balance(asset='RNDR')
+        cfx_balance = float(balance['free'])
         open_orders = client.get_open_orders(symbol=symbol)
+        
         if open_orders:
             trade_data["active_trade"] = True
-        if not open_orders and cfx_bakiye > 10:
+        
+        if not open_orders and cfx_balance > 10:
             trade_data["active_trade"] = True
             trade_data["oco_id"] = None
             
     except Exception as e:
         print("Ticaret Bulunamadı")
-        
-print("Fonksiyonlar tanımlandı")
 
-print("Bot çalıştırılıyor...")
-        
-
+# Botu çalıştır
 def run_bot():
     global trade_data
     trade_data = load_trade_data()
@@ -214,50 +269,35 @@ def run_bot():
             )
 
             # Kripto para verilerini DataFrame'e dönüştür
-            df = pd.DataFrame( 
-             klines,
-             columns=[
-              "timestamp",
-              "open",
-              "high",
-              "low",
-              "close",
-              "volume",
-              "close_time",
-              "quote_asset_volume",
-              "number_of_trades",
-              "taker_buy_base_asset_volume",
-              "taker_buy_quote_asset_volume",
-              "ignore",
-             ],
-             )
+            df = pd.DataFrame(
+                klines,
+                columns=[
+                    "timestamp", "open", "high", "low", "close", "volume",
+                    "close_time", "quote_asset_volume", "number_of_trades",
+                    "taker_buy_base_asset_volume", "taker_buy_quote_asset_volume",
+                    "ignore",
+                ],
+            )
+            
+            # Sütunları uygun veri tiplerine dönüştür
+            numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+            df[numeric_columns] = df[numeric_columns].apply(pd.to_numeric)
 
-
-            # Tarih/saat sütununu datetime veri tipine dönüştür
-            # Convert relevant columns to numeric data type
-            df['open'] = pd.to_numeric(df['open'])
-            df['high'] = pd.to_numeric(df['high'])
-            df['low'] = pd.to_numeric(df['low'])
-            df['close'] = pd.to_numeric(df['close'])
-            df['volume'] = pd.to_numeric(df['volume'])
-            # ... Convert other relevant columns to numeric data type
-
-            # Tarih/saat sütununu datetime veri tipine dönüştür
+            # Zaman damgalarını datetime veri tiplerine dönüştür
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            max_amount = calculate_max_amount(df["close"])
 
             buy_signal, sell_signal = signals(df)
-            
+        
             # Aktif bir alım/satım işlemi yoksa ve alım sinyali varsa
-            if not trade_data["active_trade"] and buy_signal.any():
+            if not trade_data["active_trade"] and buy_signal:
                 # Alım emri yerleştir
-                balance = client.get_asset_balance(asset='USDT')
-                usdt_balance = float(balance['free'])
-                max_amount = calculate_max_amount(usdt_balance)
                 place_buy_order(max_amount)
                 save_trade_data()
 
             # Aktif bir alım işlemi varsa ve satım sinyali varsa
-            elif trade_data["active_trade"] and sell_signal.any():
+            elif trade_data["active_trade"] and sell_signal:
                 # Satım emri yerleştir
                 place_sell_order_all_rndr()
                 trade_data["oco_id"] = None
@@ -266,11 +306,15 @@ def run_bot():
                 
             check_rndr_balance()
 
-            if not trade_data["oco_id"] and trade_data["active_trade"] == True:
+            if not trade_data["oco_id"] and trade_data["active_trade"] and trade_data["buy_price"]:
                 balance = client.get_asset_balance(asset='RNDR')
                 wallet_balance = float(balance['free'])
                 if wallet_balance > 10:
                     place_oco_sell_order(wallet_balance, take_profit_percent=1, stop_loss_percent=2)
+                    
+            if not trade_data["active_trade"] and not client.get_open_orders(symbol=symbol):
+                trade_data = {"active_trade": False, "oco_id": None, "buy_order_id": None, "buy_price": None}
+                save_trade_data()
                     
             check_status()
 
@@ -279,16 +323,17 @@ def run_bot():
             wallet_balance = float(balance['free'])
             status = trade_data["active_trade"]
             print(
-                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT",
+                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT --- SF: {trade_data['buy_price']} USDT",
                 end="\r",
             )
-            time.sleep(3)
+            time.sleep(5)
 
         except Exception as e:
+            print("Olağanüstü durum oluştu.")
+            time.sleep(1)
             print("Hata:", str(e))
             time.sleep(5)
 
-
 # Ana işlevi çağır
-trade_data = load_trade_data()
+print("Bot çalıştırılıyor...")
 run_bot()
