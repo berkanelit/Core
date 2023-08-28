@@ -46,7 +46,7 @@ def calculate_max_amount(df):
         return 0 
 
 # Zerolag MACD hesapla
-def zerolagmacd(close, fast_period=12, slow_period=26, signal_period=12):
+def zerolagmacd(close, fast_period=24, slow_period=52, signal_period=24):
     try:
         macd = (2 * ta.ema(close, fast_period) - ta.ema(ta.ema(close, fast_period), fast_period)) - (2 * ta.ema(close, slow_period) - ta.ema(ta.ema(close, slow_period), slow_period))
         sig = (2 * ta.ema(macd, signal_period) - ta.ema(ta.ema(macd, signal_period), signal_period))
@@ -69,29 +69,18 @@ def bb(close, length=20, mult=2):
         return None, None, None
 
 # Alım ve satım sinyallerini hesapla
-def signals(prices, fast_period=12, slow_period=26, signal_period=12):
+def signals(prices):
     buy_signal = False
     sell_signal = False 
 
-    zl_macd, zl_signal, zl_macd_hist = zerolagmacd(prices['close'], fast_period, slow_period, signal_period)
+    zl_macd, zl_signal, zl_macd_hist = zerolagmacd(prices['close'])
     upper_band, middle_band, lower_band = bb(prices['close'])
     
     try:
-        if (
-            zl_macd[198] > zl_signal[198]
-            and zl_macd[197] < zl_signal[197]
-            and zl_macd_hist[199] > zl_macd_hist[198]
-            and prices['close'][198] > middle_band[198]
-            and prices['close'][198] < upper_band[198]
-            and prices['close'][199] > middle_band[199]
-        ):
+        if zl_macd[198] > zl_signal[198] and zl_macd[197] < zl_signal[197] and zl_macd_hist[199] > zl_macd_hist[198] and (prices['close'][198] > middle_band[198] and prices['close'][198] < upper_band[198] and prices['close'][199] > middle_band[199]):
             buy_signal = True
-                
-        if (
-            zl_macd[198] < zl_signal[198]
-            and zl_macd[197] > zl_signal[197]
-            and zl_macd_hist[199] < zl_macd_hist[198]
-        ):
+            
+        if zl_macd[198] < zl_signal[198] and zl_macd[197] > zl_signal[197] and zl_macd_hist[199] < zl_macd_hist[198]:
             sell_signal = True
             
         return buy_signal, sell_signal
@@ -110,17 +99,11 @@ def round_quantity(quantity, step_size):
 # Alım emri yerleştir
 def place_buy_order(quantity):
     try:
-        server_time = client.get_server_time()
-        request_timestamp = int(time.time() * 1000)
-        time_difference = server_time['serverTime'] - request_timestamp
-        adjusted_request_timestamp = request_timestamp + time_difference
-
         order = client.create_order(
             symbol=symbol,
             side=SIDE_BUY,
             type=ORDER_TYPE_MARKET,
             quantity=quantity,
-            timestamp=adjusted_request_timestamp,
         )
         print("Alım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = True
@@ -133,10 +116,6 @@ def place_buy_order(quantity):
 # Satım emri yerleştir
 def place_sell_order(quantity):
     try:
-        server_time = client.get_server_time()
-        request_timestamp = int(time.time() * 1000)
-        time_difference = server_time['serverTime'] - request_timestamp
-        adjusted_request_timestamp = request_timestamp + time_difference
         cancel_all_orders()
         
         order = client.create_order(
@@ -144,7 +123,6 @@ def place_sell_order(quantity):
             side=SIDE_SELL,
             type=ORDER_TYPE_MARKET,
             quantity=quantity,
-            timestamp=adjusted_request_timestamp,
         )
         print("Satım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = False
@@ -185,11 +163,6 @@ def cancel_all_orders():
 # OCO satış emri yerleştirme kontrolü
 def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
     try:
-        server_time = client.get_server_time()
-        request_timestamp = int(time.time() * 1000)
-        time_difference = server_time['serverTime'] - request_timestamp
-        adjusted_request_timestamp = request_timestamp + time_difference
-        
         symbol_info = client.get_symbol_info(symbol)
         lot_size_filter = next((filter for filter in symbol_info['filters'] if filter['filterType'] == 'LOT_SIZE'), None)
         
@@ -209,7 +182,6 @@ def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
                 stopPrice=stop_loss_price,
                 stopLimitPrice=stop_loss_price,
                 stopLimitTimeInForce=TIME_IN_FORCE_GTC,
-                timestamp=adjusted_request_timestamp,
             )
 
             print("OCO satış emri gönderildi.")
