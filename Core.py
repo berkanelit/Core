@@ -14,7 +14,7 @@ api_secret = ''
 client = Client(api_key, api_secret)
 
 # Alım emri için kullanılan sembol
-symbol = "RNDRUSDT"
+symbol = "CFXUSDT"
 
 # İşlem verilerini saklamak için dictionary
 trade_data = {}
@@ -46,7 +46,7 @@ def calculate_max_amount(df):
         return 0 
 
 # Zerolag MACD hesapla
-def zerolagmacd(close, fast_period=24, slow_period=52, signal_period=24):
+def zerolagmacd(close, fast_period=12, slow_period=26, signal_period=12):
     try:
         macd = (2 * ta.ema(close, fast_period) - ta.ema(ta.ema(close, fast_period), fast_period)) - (2 * ta.ema(close, slow_period) - ta.ema(ta.ema(close, slow_period), slow_period))
         sig = (2 * ta.ema(macd, signal_period) - ta.ema(ta.ema(macd, signal_period), signal_period))
@@ -77,11 +77,24 @@ def signals(prices):
     upper_band, middle_band, lower_band = bb(prices['close'])
     
     try:
-        if zl_macd[198] > zl_signal[198] and zl_macd[197] < zl_signal[197] and zl_macd_hist[199] > zl_macd_hist[198] and (prices['close'][198] > middle_band[198] and prices['close'][198] < upper_band[198] and prices['close'][199] > middle_band[199]):
-            buy_signal = True
+        if zl_macd[198] > zl_signal[198]:
+            if zl_macd[197] < zl_signal[197]:
+                if zl_macd_hist[199] > zl_macd_hist[198]:
+                    if prices['close'][198] < middle_band[198]:
+                        if prices['close'][198] > lower_band[198]:
+                            if prices['close'][199] < middle_band[199]:
+                                buy_signal = True
+                    
+        else: 
+            buy_signal = False
             
-        if zl_macd[198] < zl_signal[198] and zl_macd[197] > zl_signal[197] and zl_macd_hist[199] < zl_macd_hist[198]:
-            sell_signal = True
+        if zl_macd[198] < zl_signal[198]:
+            if zl_macd[197] > zl_signal[197]:
+                if zl_macd_hist[198] < zl_macd_hist[197]:
+                    sell_signal = True
+        else:
+            sell_signal = False
+
             
         return buy_signal, sell_signal
     except Exception as e:
@@ -134,7 +147,7 @@ def place_sell_order(quantity):
 # Tüm RNDR varlığını satış emri olarak yerleştir
 def place_sell_order_all_rndr():
     try:
-        balance = client.get_asset_balance(asset='RNDR')
+        balance = client.get_asset_balance(asset='CFX')
         rndr_balance = float(balance['free'])
         rndr_to_sell = int(rndr_balance)
 
@@ -161,7 +174,7 @@ def cancel_all_orders():
         print("Hata cancel_all_orders:", str(e))
 
 # OCO satış emri yerleştirme kontrolü
-def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
+def place_oco_sell_order(quantity):
     try:
         symbol_info = client.get_symbol_info(symbol)
         lot_size_filter = next((filter for filter in symbol_info['filters'] if filter['filterType'] == 'LOT_SIZE'), None)
@@ -171,8 +184,8 @@ def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
             quantity = round_quantity(quantity, step_size)
             quantity = int(quantity)
 
-            take_profit_price = round(trade_data["buy_price"] * 1.01, 3)
-            stop_loss_price = round(trade_data["buy_price"] * 0.98, 3)
+            take_profit_price = round(trade_data["buy_price"] * 1.005, 3)
+            stop_loss_price = round(trade_data["buy_price"] * 0.99, 3)
 
             take_profit_order = client.create_oco_order(
                 symbol=symbol,
@@ -197,11 +210,11 @@ def place_oco_sell_order(quantity, take_profit_percent, stop_loss_percent):
 # RNDR bakiyesini kontrol et ve gerektiğinde ticareti durdur
 def check_rndr_balance():
     try:
-        balance = client.get_asset_balance(asset='RNDR')
+        balance = client.get_asset_balance(asset='CFX')
         rndr_balance = float(balance['free'])
         locked_rndr_balance = float(balance['locked'])
         
-        if trade_data["active_trade"] and rndr_balance + locked_rndr_balance <= 10:
+        if trade_data["active_trade"] and rndr_balance + locked_rndr_balance <= 3:
             trade_data["active_trade"] = False
             trade_data["oco_id"] = None
             save_trade_data()
@@ -212,16 +225,17 @@ def check_rndr_balance():
 # Ticaret durumunu kontrol et ve gerekirse güncelle
 def check_status():
     try:
-        balance = client.get_asset_balance(asset='RNDR')
+        balance = client.get_asset_balance(asset='CFX')
         cfx_balance = float(balance['free'])
         open_orders = client.get_open_orders(symbol=symbol)
         
-        if open_orders:
-            trade_data["active_trade"] = True
-        
         if not open_orders and cfx_balance > 10:
-            trade_data["active_trade"] = True
-            trade_data["oco_id"] = None
+         trade_data["active_trade"] = True
+         trade_data["oco_id"] = None
+
+        if open_orders:
+         trade_data["active_trade"] = True
+
             
     except Exception as e:
         print("Ticaret Bulunamadı")
@@ -233,10 +247,12 @@ def run_bot():
     
     while True:
         try:
+            check_status()
+            check_rndr_balance()
             # Kripto para verilerini al
             klines = client.get_klines(
                 symbol=symbol,
-                interval=Client.KLINE_INTERVAL_15MINUTE,
+                interval=Client.KLINE_INTERVAL_5MINUTE,
                 limit=200,
             )
 
@@ -275,20 +291,16 @@ def run_bot():
                 trade_data["oco_id"] = None
                 trade_data["active_trade"] = False
                 save_trade_data()
-                
-            check_rndr_balance()
 
             if not trade_data["oco_id"] and trade_data["active_trade"] and trade_data["buy_price"]:
-                balance = client.get_asset_balance(asset='RNDR')
+                balance = client.get_asset_balance(asset='CFX')
                 wallet_balance = float(balance['free'])
                 if wallet_balance > 10:
-                    place_oco_sell_order(wallet_balance, take_profit_percent=1, stop_loss_percent=2)
+                    place_oco_sell_order(wallet_balance)
                     
             if not trade_data["active_trade"] and not client.get_open_orders(symbol=symbol):
                 trade_data = {"active_trade": False, "oco_id": None, "buy_order_id": None, "buy_price": None}
                 save_trade_data()
-                    
-            check_status()
 
             last_price = float(client.get_symbol_ticker(symbol=symbol)['price'])
             balance = client.get_asset_balance(asset='USDT')
