@@ -5,6 +5,8 @@ import pandas_ta as ta
 import json
 from binance.client import Client
 from binance.enums import SIDE_BUY, ORDER_TYPE_MARKET, SIDE_SELL, TIME_IN_FORCE_GTC
+import plotly.graph_objects as go
+
 
 # Binance API kimlik bilgilerinizi buraya ekleyin
 api_key = ''
@@ -14,7 +16,7 @@ api_secret = ''
 client = Client(api_key, api_secret)
 
 # Alım emri için kullanılan sembol
-symbol = "CFXUSDT"
+symbol = "RNDRUSDT"
 
 # İşlem verilerini saklamak için dictionary
 trade_data = {}
@@ -46,7 +48,7 @@ def calculate_max_amount(df):
         return 0 
 
 # Zerolag MACD hesapla
-def zerolagmacd(close, fast_period=12, slow_period=26, signal_period=12):
+def zerolagmacd(close, fast_period=12, slow_period=26, signal_period=9):
     try:
         macd = (2 * ta.ema(close, fast_period) - ta.ema(ta.ema(close, fast_period), fast_period)) - (2 * ta.ema(close, slow_period) - ta.ema(ta.ema(close, slow_period), slow_period))
         sig = (2 * ta.ema(macd, signal_period) - ta.ema(ta.ema(macd, signal_period), signal_period))
@@ -75,7 +77,9 @@ def signals(prices):
 
     zl_macd, zl_signal, zl_macd_hist = zerolagmacd(prices['close'])
     upper_band, middle_band, lower_band = bb(prices['close'])
-    
+    dema20 = ta.dema(prices['close'], 20)
+    dema50 = ta.dema(prices['close'], 50)
+    '''
     try:
         if zl_macd[198] > zl_signal[198]:
             if zl_macd[197] < zl_signal[197]:
@@ -95,7 +99,22 @@ def signals(prices):
         else:
             sell_signal = False
 
+        '''
+        
+    try:
+        if dema20[198] > dema50[198]:
+            if dema20[197] < dema50[197]:
+                buy_signal = True
+                            
+        else: 
+            buy_signal = False
             
+        if dema20[198] < dema50[198]:
+            if dema20[197] > dema50[197]:
+                sell_signal = True
+        else:    
+            sell_signal = False
+        
         return buy_signal, sell_signal
     except Exception as e:
         print("Hata signals:", str(e))
@@ -118,7 +137,7 @@ def place_buy_order(quantity):
             type=ORDER_TYPE_MARKET,
             quantity=quantity,
         )
-        print("Alım işlemi gerçekleştirildi.")
+        print("Alım işlemi gerçekleştirildi.", order)
         trade_data["active_trade"] = True
         trade_data["buy_order_id"] = order["orderId"]
         trade_data["buy_price"] = float(order["fills"][0]["price"])
@@ -137,7 +156,7 @@ def place_sell_order(quantity):
             type=ORDER_TYPE_MARKET,
             quantity=quantity,
         )
-        print("Satım işlemi gerçekleştirildi.")
+        print("Satım işlemi gerçekleştirildi.", order)
         trade_data["active_trade"] = False
         trade_data["oco_id"] = None
         save_trade_data()
@@ -147,7 +166,7 @@ def place_sell_order(quantity):
 # Tüm RNDR varlığını satış emri olarak yerleştir
 def place_sell_order_all_rndr():
     try:
-        balance = client.get_asset_balance(asset='CFX')
+        balance = client.get_asset_balance(asset='RNDR')
         rndr_balance = float(balance['free'])
         rndr_to_sell = int(rndr_balance)
 
@@ -184,8 +203,8 @@ def place_oco_sell_order(quantity):
             quantity = round_quantity(quantity, step_size)
             quantity = int(quantity)
 
-            take_profit_price = round(trade_data["buy_price"] * 1.005, 3)
-            stop_loss_price = round(trade_data["buy_price"] * 0.99, 3)
+            take_profit_price = round(trade_data["buy_price"] * 1.01, 4)
+            stop_loss_price = round(trade_data["buy_price"] * 0.98, 4)
 
             take_profit_order = client.create_oco_order(
                 symbol=symbol,
@@ -210,7 +229,7 @@ def place_oco_sell_order(quantity):
 # RNDR bakiyesini kontrol et ve gerektiğinde ticareti durdur
 def check_rndr_balance():
     try:
-        balance = client.get_asset_balance(asset='CFX')
+        balance = client.get_asset_balance(asset='RNDR')
         rndr_balance = float(balance['free'])
         locked_rndr_balance = float(balance['locked'])
         
@@ -225,7 +244,7 @@ def check_rndr_balance():
 # Ticaret durumunu kontrol et ve gerekirse güncelle
 def check_status():
     try:
-        balance = client.get_asset_balance(asset='CFX')
+        balance = client.get_asset_balance(asset='RNDR')
         cfx_balance = float(balance['free'])
         open_orders = client.get_open_orders(symbol=symbol)
         
@@ -252,7 +271,7 @@ def run_bot():
             # Kripto para verilerini al
             klines = client.get_klines(
                 symbol=symbol,
-                interval=Client.KLINE_INTERVAL_5MINUTE,
+                interval=Client.KLINE_INTERVAL_15MINUTE,
                 limit=200,
             )
 
@@ -293,7 +312,7 @@ def run_bot():
                 save_trade_data()
 
             if not trade_data["oco_id"] and trade_data["active_trade"] and trade_data["buy_price"]:
-                balance = client.get_asset_balance(asset='CFX')
+                balance = client.get_asset_balance(asset='RNDR')
                 wallet_balance = float(balance['free'])
                 if wallet_balance > 10:
                     place_oco_sell_order(wallet_balance)
