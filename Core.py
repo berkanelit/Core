@@ -5,7 +5,6 @@ import pandas_ta as ta
 import json
 from binance.client import Client
 from binance.enums import SIDE_BUY, ORDER_TYPE_MARKET, SIDE_SELL, TIME_IN_FORCE_GTC
-import plotly.graph_objects as go
 
 
 # Binance API kimlik bilgilerinizi buraya ekleyin
@@ -47,73 +46,21 @@ def calculate_max_amount(df):
         print("Hata calculate_max_amount:", str(e))
         return 0 
 
-# Zerolag MACD hesapla
-def zerolagmacd(close, fast_period=12, slow_period=26, signal_period=9):
-    try:
-        macd = (2 * ta.ema(close, fast_period) - ta.ema(ta.ema(close, fast_period), fast_period)) - (2 * ta.ema(close, slow_period) - ta.ema(ta.ema(close, slow_period), slow_period))
-        sig = (2 * ta.ema(macd, signal_period) - ta.ema(ta.ema(macd, signal_period), signal_period))
-        hist = macd - sig
-        return macd, sig, hist
-    except Exception as e:
-        print("Hata zerolagmacd:", str(e))
-        return None, None, None
-
-# Bollinger Bantlarını hesapla
-def bb(close, length=20, mult=2):
-    try:
-        bb_bands = ta.bbands(close, length, mult)
-        upper_band = bb_bands['BBU_20_2.0']
-        middle_band = bb_bands['BBM_20_2.0']
-        lower_band = bb_bands['BBL_20_2.0']
-        return upper_band, middle_band, lower_band
-    except Exception as e:
-        print("Hata bb:", str(e))
-        return None, None, None
-
 # Alım ve satım sinyallerini hesapla
 def signals(prices):
     buy_signal = False
     sell_signal = False 
-
-    zl_macd, zl_signal, zl_macd_hist = zerolagmacd(prices['close'])
-    upper_band, middle_band, lower_band = bb(prices['close'])
+    
     dema20 = ta.dema(prices['close'], 20)
     dema50 = ta.dema(prices['close'], 50)
-    '''
+  
     try:
-        if zl_macd[198] > zl_signal[198]:
-            if zl_macd[197] < zl_signal[197]:
-                if zl_macd_hist[199] > zl_macd_hist[198]:
-                    if prices['close'][198] < middle_band[198]:
-                        if prices['close'][198] > lower_band[198]:
-                            if prices['close'][199] < middle_band[199]:
-                                buy_signal = True
-                    
-        else: 
-            buy_signal = False
-            
-        if zl_macd[198] < zl_signal[198]:
-            if zl_macd[197] > zl_signal[197]:
-                if zl_macd_hist[198] < zl_macd_hist[197]:
-                    sell_signal = True
-        else:
-            sell_signal = False
-
-        '''
-        
-    try:
-        if dema20[198] > dema50[198]:
-            if dema20[197] < dema50[197]:
+        if dema20[199] > dema50[199]:
+            if dema20[198] < dema50[198]:
                 buy_signal = True
-                            
-        else: 
-            buy_signal = False
             
-        if dema20[198] < dema50[198]:
-            if dema20[197] > dema50[197]:
+        if dema20[199] < dema50[199]:
                 sell_signal = True
-        else:    
-            sell_signal = False
         
         return buy_signal, sell_signal
     except Exception as e:
@@ -202,9 +149,8 @@ def place_oco_sell_order(quantity):
             step_size = float(lot_size_filter['stepSize'])
             quantity = round_quantity(quantity, step_size)
             quantity = int(quantity)
-
-            take_profit_price = round(trade_data["buy_price"] * 1.01, 4)
-            stop_loss_price = round(trade_data["buy_price"] * 0.98, 4)
+            take_profit_price = round(trade_data["buy_price"] * 1.01, 3)
+            stop_loss_price = round(trade_data["buy_price"] * 0.98, 3)
 
             take_profit_order = client.create_oco_order(
                 symbol=symbol,
@@ -236,28 +182,11 @@ def check_rndr_balance():
         if trade_data["active_trade"] and rndr_balance + locked_rndr_balance <= 3:
             trade_data["active_trade"] = False
             trade_data["oco_id"] = None
+            trade_data["buy_price"] = None
             save_trade_data()
             print("Aktif Ticaret Durumu Olmadığı İçin False Edildi.")
     except Exception as e:
         print("Hata check_rndr_balance:", str(e))
-
-# Ticaret durumunu kontrol et ve gerekirse güncelle
-def check_status():
-    try:
-        balance = client.get_asset_balance(asset='RNDR')
-        cfx_balance = float(balance['free'])
-        open_orders = client.get_open_orders(symbol=symbol)
-        
-        if not open_orders and cfx_balance > 10:
-         trade_data["active_trade"] = True
-         trade_data["oco_id"] = None
-
-        if open_orders:
-         trade_data["active_trade"] = True
-
-            
-    except Exception as e:
-        print("Ticaret Bulunamadı")
 
 # Botu çalıştır
 def run_bot():
@@ -266,7 +195,6 @@ def run_bot():
     
     while True:
         try:
-            check_status()
             check_rndr_balance()
             # Kripto para verilerini al
             klines = client.get_klines(
@@ -301,15 +229,11 @@ def run_bot():
             if not trade_data["active_trade"] and buy_signal:
                 # Alım emri yerleştir
                 place_buy_order(max_amount)
-                save_trade_data()
 
             # Aktif bir alım işlemi varsa ve satım sinyali varsa
             elif trade_data["active_trade"] and sell_signal:
                 # Satım emri yerleştir
                 place_sell_order_all_rndr()
-                trade_data["oco_id"] = None
-                trade_data["active_trade"] = False
-                save_trade_data()
 
             if not trade_data["oco_id"] and trade_data["active_trade"] and trade_data["buy_price"]:
                 balance = client.get_asset_balance(asset='RNDR')
@@ -326,10 +250,10 @@ def run_bot():
             wallet_balance = float(balance['free'])
             status = trade_data["active_trade"]
             print(
-                f"Durum: {status} Son Fiyat: {last_price} USDT ---  Cüzdan Bakiyesi: {wallet_balance} USDT --- SF: {trade_data['buy_price']} USDT",
+                f"Durum: {status} Son Fiyat: {last_price} ---  Cüzdan Bakiyesi: {wallet_balance} --- SF: {trade_data['buy_price']}",
                 end="\r",
             )
-            time.sleep(5)
+            time.sleep(3)
 
         except Exception as e:
             print("Olağanüstü durum oluştu.")
