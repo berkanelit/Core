@@ -30,7 +30,7 @@ def load_trade_data():
 # Ticaret verilerini kaydet
 def save_trade_data():
     with open("trade_data.json", "w") as file:
-        json.dump(trade_data, file)     
+        json.dump(trade_data, file)  
 
 # Alım miktarını hesapla
 def calculate_max_amount(df):
@@ -46,26 +46,37 @@ def calculate_max_amount(df):
 
 # Alım ve satım sinyallerini hesapla
 def signals(prices):
+    # Alım ve satım sinyalleri
     buy_signal = False
     sell_signal = False
     
-    # RSI ve DEMA göstergelerini hesapla
+    # Son 14 mum için RSI ve DEMA göstergelerini hesapla
     rsi = ta.rsi(prices['close'], 14)
+    
+    # Son 20 ve 50 mum için DEMA göstergelerini hesapla
     dema20 = ta.dema(prices['close'], 20)
     dema50 = ta.dema(prices['close'], 50)
     
+    # Histogramı hesapla
     hist = dema20 - dema50
-
-    # Satış sinyali koşulu: RSI 70'in üzerindeyse
-    if rsi.iloc[-1] >= 70:
-        sell_signal = True
     
+    # Alım sinyali koşulu: DEMA20 DEMA50'nin üzerindeyse ve histogram yükseliyorsa
     if dema20.iloc[-2] > dema50.iloc[-2] and dema20.iloc[-3] < dema50.iloc[-3] and hist.iloc[-1] >= hist.iloc[-2]:
         buy_signal = True
         
+    # Satış sinyali koşulu: DEMA20 DEMA50'nin altındaysa
     if dema20.iloc[-2] < dema50.iloc[-2] and dema20.iloc[-3] > dema50.iloc[-3]:
+        sell_signal = True    
+        
+    # Satış sinyali koşulu: RSI 70'in üzerindeyse
+    if rsi.iloc[-1] >= 70 and not buy_signal:
         sell_signal = True
         
+    if buy_signal and sell_signal:
+        buy_signal = False
+        sell_signal = False
+    
+    # Alım ve satım sinyallerini döndür
     return buy_signal, sell_signal
 
 # Alım emri yerleştir
@@ -77,7 +88,7 @@ def place_buy_order(quantity):
             type=ORDER_TYPE_MARKET,
             quantity=quantity,
         )
-        print("Alım işlemi gerçekleştirildi.", order)
+        print("Alım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = True
         trade_data["buy_order_id"] = order["orderId"]
         trade_data["buy_price"] = float(order["fills"][0]["price"])
@@ -96,7 +107,7 @@ def place_sell_order(quantity):
             type=ORDER_TYPE_MARKET,
             quantity=quantity,
         )
-        print("Satım işlemi gerçekleştirildi.", order)
+        print("Satım işlemi gerçekleştirildi.")
         trade_data["active_trade"] = False
         trade_data["oco_id"] = None
         save_trade_data()
@@ -191,6 +202,7 @@ def run_bot():
     
     while True:
         try:
+            # RNDR bakiyesini kontrol et ve gerektiğinde ticareti durdur
             check_rndr_balance()
             # Kripto para verilerini al
             klines = client.get_klines(
@@ -216,10 +228,13 @@ def run_bot():
 
             # Zaman damgalarını datetime veri tiplerine dönüştür
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-
+            
+            # Alım miktarını hesapla
             max_amount = calculate_max_amount(df["close"])
-
+            
+            # Alım ve satım sinyallerini hesapla
             buy_signal, sell_signal = signals(df)
+
 
             # Aktif bir alım/satım işlemi yoksa ve alım sinyali varsa
             if not trade_data["active_trade"] and buy_signal:
@@ -232,13 +247,15 @@ def run_bot():
                 print("Satış sinyali algılandı.")
                 # Satım emri yerleştir
                 place_sell_order_all_rndr()
-
+                
+            # Aktif bir alım işlemi varsa ve satış emri yoksa
             if not trade_data["oco_id"] and trade_data["active_trade"] and trade_data["buy_price"]:
                 balance = client.get_asset_balance(asset='RNDR')
                 wallet_balance = float(balance['free'])
                 if wallet_balance > 10:
                     place_oco_sell_order(wallet_balance)
-
+                    
+            # Aktif bir alım işlemi yoksa ve açık emir yoksa
             if not trade_data["active_trade"] and not client.get_open_orders(symbol=symbol):
                 trade_data = {"active_trade": False, "oco_id": None,
                     "buy_order_id": None, "buy_price": None}
@@ -253,7 +270,7 @@ def run_bot():
                 f"Durum: {status} Son Fiyat: {last_price} ---  Cüzdan Bakiyesi: {wallet_balance} --- SF: {trade_data['buy_price']}",
                 end="\r",
             )
-            time.sleep(3)
+            time.sleep(1)
 
         except Exception as e:
             time.sleep(1)
